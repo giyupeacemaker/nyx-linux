@@ -1,0 +1,20 @@
+# remove from airootfs!
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = calamares
+
+[Action]
+Description = Installing private Nyx Linux/Calamares configuration...
+When = PostTransaction
+Depends = coreutils
+Depends = glibc
+# useradd, usermod, groupadd and chpasswd all live in shadow. There is no
+# 'passwd' package on Arch, so naming it here makes pacman skip this hook
+# entirely ("could not satisfy dependencies").
+Depends = shadow
+# Exactly one Exec, and it must stay that way: pacman only honours the last
+# Exec line and warns "overwriting previous definition of Exec". Everything the
+# hook does has to live inside config/live-setup.sh.
+Exec = /bin/bash /usr/share/arch-custom/live-setup.sh

@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# Configure the selected UEFI bootloader for Nyx Linux.
+#
+# This replaces the built-in Calamares "bootloader" module, which can only
+# install GRUB and systemd-boot and aborts the installation when the user
+# chooses Limine. Everything here runs inside the target chroot (dontChroot is
+# false), with the ESP already mounted at /boot by the "mount" module and
+# the bootloader packages already installed by the "packages" module, so no
+# network access is required.
+set -euo pipefail
+
+choice="${1:-}"
+esp=/boot
+
+log() { printf '\033[1;34m==> %s\033[0m\n' "$*"; }
+err() { printf '\033[1;31m[bootloader] %s\033[0m\n' "$*" >&2; }
+
+case "$choice" in
+    limine|systemd-boot|grub) ;;
+    "")
+        err "No bootloader choice was provided."
+        exit 1
+        ;;
+    *)
+        err "Unknown bootloader choice: $choice"
+        exit 1
+        ;;
+esac
+
+[[ -d "$esp" ]] || { err "The EFI system partition mount point $esp is missing."; exit 1; }
+
+# --- Kernel/initramfs discovery (CachyOS kernel) ---------------------------
+kernel_path=""
+initramfs_path=""
+if [[ -f /boot/vmlinuz-linux-cachyos ]]; then
+    kernel_path=/boot/vmlinuz-linux-cachyos
+fi
+if [[ -f /boot/initramfs-linux-cachyos.img ]]; then
+    initramfs_path=/boot/initramfs-linux-cachyos.img
+fi
+
+if [[ -z "$kernel_path" || -z "$initramfs_path" ]]; then
+    err "CachyOS kernel and/or initramfs not found in $esp; cannot configure a bootloader."
+    exit 1
+fi
+
+# --- Kernel command line (mirrors what Limine and systemd-boot need) --------
+# Prefer /etc/fstab (written by the fstab module) over findmnt, because the
+# target root may be a subvolume or a LUKS mapping that the chroot cannot probe.
+build_cmdline() {
+    local root_spec="" root_opts="" subvol="" cmdline="" crypt_name="" crypt_uuid=""
+
+    if [[ -r /etc/fstab ]]; then
+        read -r root_spec root_opts < <(awk '$2 == "/" { print $1, $4; exit }' /etc/fstab) || true
+    fi
+    if [[ -z "$root_spec" ]]; then
+        root_spec="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+        root_spec="${root_spec:-LABEL=archroot}"
+    fi
+
+    subvol="$(printf '%s\n' "$root_opts" | tr ',' '\n' | sed -n 's/^subvol=//p' | head -n1 || true)"
+
+    cmdline="root=${root_spec} rw quiet"
+
+    # LUKS: let the initramfs unlock early and point it at the real mapper.
+    if [[ -r /etc/crypttab ]]; then
+        read -r crypt_name crypt_uuid < <(
+            awk '!/^[[:space:]]*#/ && NF >= 2 && $3 != "swap" { print $1, $2; exit }' /etc/crypttab
+        ) || true
+        if [[ -n "$crypt_name" && -n "$crypt_uuid" ]]; then
+            # crypttab stores a bare UUID; the kernel wants the luks- prefixed form.
+            cmdline="rd.luks.uuid=luks-${crypt_uuid#UUID=} root=/dev/mapper/${crypt_name} rw quiet"
+        fi
+    fi
+
+    if [[ -n "$subvol" ]]; then
+        cmdline+=" rootflags=subvol=${subvol}"
+    fi
+
+    printf '%s' "$cmdline"
+}
+
+CMDLINE="$(build_cmdline)"
+kernel_name="${kernel_path##*/}"
+initramfs_name="${initramfs_path##*/}"
+
+esp_source="$(findmnt -n -o SOURCE "$esp" 2>/dev/null || true)"
+esp_disk=""
+esp_part=""
+if [[ -n "$esp_source" ]]; then
+    esp_disk="$(lsblk -ndo PKNAME "$esp_source" 2>/dev/null | sed -n '1p' || true)"
+    esp_part="$(lsblk -ndo PARTN "$esp_source" 2>/dev/null | sed -n '1p' || true)"
+fi
+
+register_efi_entry() {
+    local label="$1" loader_path="$2"
+    if [[ -z "$esp_disk" || -z "$esp_part" ]]; then
+        err "Could not identify the ESP for efibootmgr; skipping the UEFI entry for $label."
+        return 0
+    fi
+    if ! command -v efibootmgr >/dev/null 2>&1; then
+        err "efibootmgr is not installed; skipping the UEFI entry for $label."
+        return 0
+    fi
+    if efibootmgr 2>/dev/null | grep -Fq "$label"; then
+        return 0
+    fi
+    if efibootmgr --create --disk "/dev/${esp_disk}" --part "$esp_part" \
+        --label "$label" --loader "$loader_path" --unicode >/dev/null 2>&1; then
+        log "Registered UEFI boot entry: $label"
+    else
+        err "Could not register the UEFI entry for $label; the fallback EFI path is in place."
+    fi
+}
+
+# --- Limine -----------------------------------------------------------------
+configure_limine() {
+    log "Configuring Limine"
+    [[ -x /usr/local/sbin/update-arch-limine ]] || {
+        err "The Limine helper is missing from the target rootfs."
+        exit 1
+    }
+    /usr/local/sbin/update-arch-limine --install
+    register_efi_entry "Nyx Linux (Limine)" '\EFI\arch-limine\BOOTX64.EFI'
+}
+
+# --- systemd-boot -----------------------------------------------------------
+configure_systemd_boot() {
+    log "Configuring systemd-boot"
+
+    install -d -m 0755 "$esp/loader/entries" "$esp/EFI/BOOT"
+
+    cat >"$esp/loader/loader.conf" <<EOF
+default Nyx Linux
+timeout 5
+console-mode max
+editor no
+EOF
+
+    cat >"$esp/loader/entries/10-nyx-linux.conf" <<EOF
+title    Nyx Linux
+sort-key 01
+linux    /$kernel_name
+initrd   /$initramfs_name
+options  $CMDLINE
+EOF
+
+    # Drop the stock archiso entries that came from the live image.
+    find "$esp/loader/entries" -maxdepth 1 -type f -name '*archiso*' -delete 2>/dev/null || true
+
+    if command -v bootctl >/dev/null 2>&1; then
+        bootctl --esp-path="$esp" install >/dev/null 2>&1 || \
+            err "bootctl install reported an error; loader files were written manually."
+    else
+        err "bootctl is not available; only the loader entry was written."
+    fi
+
+    # Make sure the removable-media fallback also boots Nyx.
+    if [[ -f /usr/lib/systemd/boot/efi/systemd-bootx64.efi ]]; then
+        install -m 0644 /usr/lib/systemd/boot/efi/systemd-bootx64.efi \
+            "$esp/EFI/BOOT/BOOTX64.EFI" 2>/dev/null || true
+    fi
+
+    register_efi_entry "Nyx Linux (systemd-boot)" '\EFI\systemd\systemd-bootx64.efi'
+}
+
+# --- GRUB -------------------------------------------------------------------
+configure_grub() {
+    log "Configuring GRUB"
+
+    if ! command -v grub-install >/dev/null 2>&1; then
+        err "grub is not installed in the target rootfs."
+        exit 1
+    fi
+
+    # The grubcfg module normally writes /etc/default/grub; guarantee the key
+    # values so grub-mkconfig produces a sane menu.
+    touch /etc/default/grub
+    for kv in "GRUB_TIMEOUT=5" "GRUB_DEFAULT=saved" "GRUB_DISABLE_SUBMENU=true" \
+              "GRUB_TERMINAL_OUTPUT=console" "GRUB_DISABLE_RECOVERY=true"; do
+        grep -q "^${kv%%=*}=" /etc/default/grub || printf '%s\n' "$kv" >>/etc/default/grub
+    done
+
+    grub-install --target=x86_64-efi --efi-directory="$esp" \
+        --bootloader-id=NyxLinux --recheck
+    install -d -m 0755 "$esp/grub"
+    grub-mkconfig -o "$esp/grub/grub.cfg"
+
+    register_efi_entry "Nyx Linux (GRUB)" '\EFI\NyxLinux\grubx64.efi'
+}
+
+case "$choice" in
+    limine)       configure_limine ;;
+    systemd-boot) configure_systemd_boot ;;
+    grub)         configure_grub ;;
+esac
+
+log "Bootloader configuration finished: $choice"

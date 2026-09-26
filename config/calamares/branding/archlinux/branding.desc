@@ -1,0 +1,42 @@
+---
+componentName: archlinux
+welcomeStyleCalamares: true
+welcomeExpandingLogo: true
+
+windowExpanding: normal
+windowSize: 960px,640px
+windowPlacement: center
+sidebar: widget
+navigation: widget
+
+strings:
+  productName: "Nyx Linux"
+  shortProductName: "Nyx Linux"
+  version: "Comfy · Gaming · Bloatless"
+  shortVersion: "Nyx Linux"
+  versionedName: "Nyx Linux (Arch-based)"
+  shortVersionedName: "Nyx Linux"
+  bootloaderEntryName: "NyxLinux"
+  productUrl: "https://github.com/giyupeacemaker"
+  supportUrl: "https://github.com/giyupeacemaker"
+  knownIssuesUrl: "https://github.com/giyupeacemaker"
+  releaseNotesUrl: "https://github.com/giyupeacemaker"
+  donateUrl: ""
+
+images:
+  productIcon: "logo.svg"
+  productLogo: "logo.svg"
+  productWelcome: "welcome.svg"
+  productWallpaper: "wallpaper.svg"
+
+style:
+  SidebarBackground: "#111827"
+  SidebarText: "#F8FAFC"
+  SidebarTextCurrent: "#111827"
+  SidebarBackgroundCurrent: "#60A5FA"
+
+slideshow: []
+uploadServer:
+  type: "none"
+  url: ""
+  sizeLimit: -1

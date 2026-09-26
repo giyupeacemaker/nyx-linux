@@ -1,0 +1,16 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = filesystem
+Target = base
+Target = arch-install-scripts
+
+[Action]
+Description = Restoring the Nyx Linux os-release branding (ID=arch kept)...
+When = PostTransaction
+Depends = bash
+Depends = coreutils
+# Call the interpreter explicitly. A bare path to the script failed with
+# "call to execv failed (Permission denied)" during the live-image build.
+Exec = /bin/bash /usr/local/sbin/update-nyx-os-release

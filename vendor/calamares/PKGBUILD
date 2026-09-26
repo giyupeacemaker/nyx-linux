@@ -1,0 +1,94 @@
+# Maintainer: private ISO build
+# Based on the current Arch AUR packaging approach, with Python jobs and
+# packagechooser enabled for this ISO.
+
+pkgname=calamares
+pkgver=3.4.3
+pkgrel=1
+pkgdesc='Distribution-independent installer framework'
+arch=('x86_64')
+url='https://codeberg.org/Calamares/calamares'
+license=('GPL-3.0-or-lause')
+options=('!lto')
+
+depends=(
+  kcoreaddons
+  kpmcore
+  libpwquality
+  polkit-qt6
+  python
+  qt6-base
+  qt6-declarative
+  qt6-svg
+  yaml-cpp
+)
+makedepends=(
+  extra-cmake-modules
+  ninja
+  qt6-tools
+  qt6-translations
+)
+
+source=("calamares-${pkgver}.tar.gz")
+sha256sums=('78784e6018097e4fe74cbd8f1530929626dcecfe303e14383bc8c074feb34eec')
+
+build() {
+  local skip_modules=(
+    contextualprocess
+    dracut
+    dracutlukscfg
+    dummycpp
+    dummyprocess
+    dummypython
+    dummypythonqt
+    finishedq
+    fsresizer
+    gitconfig
+    gnomeq
+    hardwareinfo
+    hostname
+    initcpio
+    initramfs
+    initramfscfg
+    interactiveterminal
+    keyboardq
+    license
+    localeq
+    luksbootkeyfile
+    luksopenswaphookcfg
+    networkcfg
+    notesqml
+    openrcdmcryptcfg
+    packagechooserq
+    plymouthcfg
+    preservefiles
+    rawfs
+    services-openrc
+    tracking
+    welcomeq
+    zfs
+    zfshostid
+  )
+
+  # The vendored tarball has a single top-level directory named "calamares"
+  # (not "calamares-${pkgver}"), so point cmake at that.
+  cmake -B build -S "${srcdir}/calamares" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DWITH_QT6=ON \
+    -DWITH_QML=ON \
+    -DWITH_PYTHON=ON \
+    -DWITH_PYBIND11=ON \
+    -DINSTALL_POLKIT=ON \
+    -DINSTALL_CONFIG=ON \
+    -DBUILD_TESTING=OFF \
+    -DBUILD_SCHEMA_TESTING=OFF \
+    -DUSE_services=services-systemd \
+    -DSKIP_MODULES="${skip_modules[*]}"
+  cmake --build build
+}
+
+package() {
+  DESTDIR="${pkgdir}" cmake --install build
+}

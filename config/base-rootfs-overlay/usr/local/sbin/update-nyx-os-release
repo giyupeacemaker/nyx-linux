@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Re-apply the Nyx Linux os-release branding.
+#
+# The target rootfs is installed with a custom /usr/lib/os-release so that
+# NAME/PRETTY_NAME read "Nyx Linux" while ID=arch stays untouched. Package
+# upgrades of filesystem/base replace that file, so a pacman hook calls this
+# script afterwards to restore the branding.
+set -euo pipefail
+
+template=/usr/share/arch-custom/nyx-os-release
+
+if [[ ! -f "$template" ]]; then
+    echo "update-nyx-os-release: $template is missing; leaving os-release untouched." >&2
+    exit 0
+fi
+
+# Only act if the file is still the stock Arch one; never fight a manual override.
+if ! grep -q '^ID=arch$' /usr/lib/os-release 2>/dev/null; then
+    echo "update-nyx-os-release: /usr/lib/os-release is not an Arch os-release; skipping." >&2
+    exit 0
+fi
+
+if cmp -s "$template" /usr/lib/os-release 2>/dev/null; then
+    exit 0
+fi
+
+install -m 0644 "$template" /usr/lib/os-release
+rm -f /etc/os-release
+ln -s ../usr/lib/os-release /etc/os-release
+
+echo "update-nyx-os-release: Nyx Linux branding restored."

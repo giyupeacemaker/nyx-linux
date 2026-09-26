@@ -1,0 +1,13 @@
+# remove from airootfs!
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = linux-cachyos
+
+[Action]
+Description = Building the CachyOS initramfs for the live ISO...
+When = PostTransaction
+Depends = mkinitcpio
+Depends = mkinitcpio-archiso
+Exec = /usr/bin/mkinitcpio -P

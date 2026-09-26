@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080">
+  <defs>
+    <radialGradient id="a"><stop stop-color="#334155" stop-opacity=".32"/><stop offset="1" stop-color="#20242b" stop-opacity="0"/></radialGradient>
+    <radialGradient id="b"><stop stop-color="#4c1d95" stop-opacity=".20"/><stop offset="1" stop-color="#111318" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="#111318"/>
+  <ellipse cx="480" cy="420" rx="700" ry="700" fill="url(#a)"/>
+  <ellipse cx="1450" cy="650" rx="700" ry="700" fill="url(#b)"/>
+</svg>

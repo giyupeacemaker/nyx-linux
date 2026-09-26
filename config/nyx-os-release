@@ -1,0 +1,11 @@
+NAME="Nyx Linux"
+PRETTY_NAME="Nyx Linux (Arch-based)"
+ID=arch
+ID_LIKE=arch
+VARIANT="Arch-based"
+VERSION="@RELEASE@"
+VERSION_ID="@RELEASE@"
+PRETTY_VERSION="Nyx Linux @RELEASE@ (Arch-based)"
+BUILD_ID="nyx"
+ANSI_COLOR="0;36"
+# Add GitHub project, support, and release URLs here when the repository is published.

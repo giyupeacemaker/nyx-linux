@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Install Nyx Linux
+Name[ru]=Установить Nyx Linux
+Comment=Graphical installation with Calamares
+Comment[ru]=Графическая установка через Calamares
+Exec=sudo -n calamares
+TryExec=calamares
+Icon=calamares
+Terminal=false
+Categories=System;
+NoDisplay=false
+X-KDE-autostart-after=panel

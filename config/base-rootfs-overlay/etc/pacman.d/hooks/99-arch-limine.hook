@@ -1,0 +1,15 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = limine
+Target = linux-cachyos
+Target = linux-cachyos-headers
+
+[Action]
+Description = Updating the private Nyx Linux Limine configuration...
+When = PostTransaction
+Depends = bash
+Depends = coreutils
+Depends = util-linux
+Exec = /usr/local/sbin/update-arch-limine

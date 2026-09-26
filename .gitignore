@@ -1,0 +1,22 @@
+# Build outputs. A finished ISO is 2.5 GB and the upstream Arch ISO is 1.5 GB;
+# they are reproduced by build.sh, never committed.
+/out/
+*.iso
+*.iso.sig
+*.log
+
+# Local scratch trees from the WSL build environment.
+work/
+/build/
+*.squashfs
+*.sfs
+
+# Editor and OS noise.
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Secrets. Never commit a GitHub token.
+*.token
+.env
