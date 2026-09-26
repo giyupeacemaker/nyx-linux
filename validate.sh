@@ -625,6 +625,69 @@ else
 fi
 
 # --------------------------------------------------------------------------
+sect "Installer package choices exist"
+# A typo in a packagechooser list does not fail the build. It fails silently at
+# install time, on the machine of somebody who picked that option. Everything
+# named in the lists has to resolve either to a package or to a group, because
+# pacman -S accepts both and xorg-apps, gnome and xfce4 are groups.
+# This check needs a pacman database. validate.sh is also run from the WSL root
+# filesystem, where pacman does not exist and the database lives in the build
+# chroot instead, so fall back to querying it through chroot.
+# Note: this has to be an array, not a string. This script sets
+# IFS=$'\n\t', which removes the space as a word separator, so an unquoted
+# "chroot /path /usr/bin/pacman" would be looked up as a single (nonexistent)
+# command name and every lookup would fail. Arrays are immune to IFS.
+pacman_q=()
+if command -v pacman >/dev/null 2>&1; then
+    pacman_q=(pacman)
+else
+    for cand in "${NYX_CHROOT:-}" /var/tmp/archroot; do
+        if [[ -n "$cand" && -x "$cand/usr/bin/pacman" ]]; then
+            pacman_q=(chroot "$cand" /usr/bin/pacman)
+            break
+        fi
+    done
+fi
+
+if (( ${#pacman_q[@]} > 0 )); then
+    mapfile -t chooser_pkgs < <(python3 - config/calamares/modules <<'PY' 2>/dev/null
+import re, sys, pathlib
+for f in sorted(pathlib.Path(sys.argv[1]).glob('packagechooser-*.conf')):
+    text = f.read_text(encoding='utf-8')
+    cur = None
+    for line in text.splitlines():
+        m = re.match(r'\s*-\s*id:\s*(\S+)\s*$', line)
+        if m:
+            cur = m.group(1); continue
+        m = re.match(r'\s*-\s+([a-z0-9][a-z0-9._+-]*)\s*$', line)
+        if m and cur:
+            print(f"{cur}\t{m.group(1)}")
+PY
+    )
+    if (( ${#chooser_pkgs[@]} == 0 )); then
+        warn "could not parse the packagechooser lists"
+    else
+        missing_choice=0
+        for pair in "${chooser_pkgs[@]}"; do
+            name="${pair##*$'\t'}"
+            if "${pacman_q[@]}" -Si -- "$name" >/dev/null 2>&1; then
+                continue
+            fi
+            if "${pacman_q[@]}" -Sgq 2>/dev/null | grep -qx -- "$name"; then
+                continue   # a group, which pacman -S still accepts
+            fi
+            bad "installer choice refers to unknown package or group: $name"
+            missing_choice=$((missing_choice + 1))
+        done
+        if (( missing_choice == 0 )); then
+            ok "all ${#chooser_pkgs[@]} installer package choices resolve"
+        fi
+    fi
+else
+    warn "no pacman database reachable, skipping installer package existence checks"
+fi
+
+# --------------------------------------------------------------------------
 printf '\n\033[1mChecks passed: %d, failed: %d\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
 printf '\033[1;32mAll static checks passed.\033[0m\n'

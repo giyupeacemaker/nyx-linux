@@ -61,7 +61,7 @@ rather than reinterpreted.
 
 | Choice | Options |
 | --- | --- |
-| Desktop | KDE Plasma, GNOME, XFCE, MATE, Cinnamon, Budgie, LXQt, Deepin, Enlightenment, Pantheon, Sway, Hyprland, i3, or none |
+| Desktop | KDE Plasma, GNOME, XFCE, MATE, Cinnamon, Budgie, LXQt, Deepin, Enlightenment, Pantheon, Sway, Hyprland, Niri, i3, or none |
 | AUR helper | Yay, Paru, or none |
 | Bootloader | Limine (default), systemd-boot, or GRUB |
 
