@@ -36,6 +36,18 @@ need_root() {
     (( ${EUID:-$(id -u)} == 0 )) || die "нужны права root: sudo nyx-tweaks $*"
 }
 
+# boot-params belongs to the base rootfs, not to this package: it is bootloader
+# plumbing, and rewriting it on a tools upgrade would move files that
+# nyx-configure-bootloader and update-arch-limine depend on. So it is not
+# something pacman can restore for us, and it is worth saying so plainly rather
+# than letting apply die halfway through with "command not found".
+require_boot_params() {
+    [[ -x "$BOOT_PARAMS" ]] || die "$BOOT_PARAMS is missing or not executable.
+    It is part of the Nyx base installation, not of this package, so pacman
+    cannot restore it. Reinstall Nyx, or put the file back from
+    /usr/local/lib/nyx/boot-params in the Nyx repository."
+}
+
 # ---------------------------------------------------------------------------
 # The registry. Each entry is key|kind|label|default|reboot|explanation, and the
 # value list. "kind" decides where the value is written:
@@ -313,6 +325,7 @@ apply_all() {
     # falls back to its default: the process starts with no CURRENT array, so
     # apply would undo whatever "set" recorded.
     load_state
+    require_boot_params
     local key kind value
 
     for key in governor boost; do
@@ -399,8 +412,15 @@ cmd_list() {
     dim "  values in dim colour are the defaults"
     printf '  change one with:  nyx-tweaks set <key> <value>\n'
     printf '  write them out:   nyx-tweaks apply\n\n'
-    if pending_reboot >/dev/null; then
-        warn "a reboot is pending for the kernel parameters"
+    # Without boot-params nothing can be known about the running command line.
+    # Reporting "no reboot pending" here would be a guess presented as a fact.
+    if [[ -x "$BOOT_PARAMS" ]]; then
+        if pending_reboot >/dev/null; then
+            warn "a reboot is pending for the kernel parameters"
+            printf '\n'
+        fi
+    else
+        warn "$BOOT_PARAMS is missing, so the kernel parameters cannot be checked"
         printf '\n'
     fi
 }
