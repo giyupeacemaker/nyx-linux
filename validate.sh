@@ -1188,6 +1188,57 @@ else
     bad "the USE_services flag is not a single continued line"
 fi
 
+# --- repository naming -----------------------------------------------------
+# pacman finds a repository database by the section name: [nyx] means nyx.db and
+# nothing else. The name therefore has to agree in three places — the pacman.conf
+# section, the repo-add argument for the live repository, and the seeded database
+# in the target. When it did not, the build failed inside mkarchiso with
+# "failed retrieving file 'nyx.db'", long after Calamares had been compiled.
+nyx_section="$(sed -n 's/^\[\([A-Za-z0-9_-]*\)\]$/\1/p' config/live-pacman.conf \
+               | grep -E '^nyx' | head -1)"
+if [[ -n "$nyx_section" ]]; then
+    ok "pacman.conf declares the repository as [$nyx_section]"
+else
+    bad "pacman.conf has no [nyx...] repository section"
+    nyx_section=""
+fi
+
+if [[ -n "$nyx_section" ]]; then
+    want_db="${nyx_section}.db"
+    # The live repository.
+    live_db="$(grep -oE 'repo-add[^\n]*\$LOCAL_REPO/[A-Za-z0-9_.-]+\.db\.tar\.[a-z]+' build.sh \
+               | head -1 | grep -oE '[A-Za-z0-9_.-]+\.db\.tar\.[a-z]+' | head -1)"
+    if [[ -n "$live_db" ]]; then
+        if [[ "$live_db" == "$want_db."* ]]; then
+            ok "the live repository database is named after the section ($live_db)"
+        else
+            bad "the live repository database is '$live_db' but [$nyx_section] makes pacman look for '$want_db'"
+        fi
+    else
+        bad "could not find the repo-add call for the live repository"
+    fi
+
+    # The seeded repository in the target system.
+    target_db="$(grep -oE 'var/cache/nyx-repo/[A-Za-z0-9_.-]+\.db\.tar\.[a-z]+' build.sh \
+                 | head -1 | grep -oE '[A-Za-z0-9_.-]+\.db\.tar\.[a-z]+' | head -1)"
+    if [[ -n "$target_db" ]]; then
+        if [[ "$target_db" == "$want_db."* ]]; then
+            ok "the target repository database uses the same name ($target_db)"
+        else
+            bad "the target repository database is '$target_db' but the section says '$want_db'"
+        fi
+    else
+        bad "could not find the seeded repository database in build.sh"
+    fi
+
+    # And the required-files list has to name what was actually created.
+    if grep -qE "^\s*'var/cache/nyx-repo/${want_db}\.tar\.[a-z]+'" build.sh; then
+        ok "the content check looks for the database that is really created"
+    else
+        bad "the content check does not list 'var/cache/nyx-repo/${want_db}.tar.*'"
+    fi
+fi
+
 # --------------------------------------------------------------------------
 printf '\n\033[1mChecks passed: %d, failed: %d\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

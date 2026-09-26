@@ -209,7 +209,13 @@ mapfile -t nyx_tools_packages < <(
 cp "${nyx_tools_packages[0]}" "$LOCAL_REPO/"
 info "nyx-tools: $(basename "${nyx_tools_packages[0]}")"
 
-repo-add "$LOCAL_REPO/nyx-local.db.tar.zst" "$LOCAL_REPO"/*.pkg.tar.zst
+# The database name has to match the repository section in pacman.conf, because
+# that is literally how pacman finds it: the [nyx] section looks for "nyx.db" and
+# nothing else. A database called nyx-local.db under a [nyx] section fails with
+# "failed retrieving file 'nyx.db'", and it does so deep inside mkarchiso, after
+# Calamares and everything else has already been built. The installed system's
+# repository is seeded as nyx.db for the same reason, so the two now agree.
+repo-add "$LOCAL_REPO/nyx.db.tar.zst" "$LOCAL_REPO"/*.pkg.tar.zst
 
 log "Creating the minimal target root filesystem"
 rm -rf -- "$BASE_ROOTFS" "$BASE_SQUASHFS"
