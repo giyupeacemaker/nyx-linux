@@ -112,7 +112,46 @@ system update brings a new version along:
 
 - `nyx-updates` — what is available to install. Installs nothing
 - `nyx-rollback` — filesystem snapshots, and a way back after a bad update
+- `nyx-tweaks` — ten opinionated switches, and a menu to set them
 - `nyx-apply-wallpaper` — applies the default background on first login
+
+### `nyx-tweaks`
+
+Ten switches for the things people spend an evening tuning by hand. Every one of
+them is a value in a file; none needs a kernel patch, and none downloads anything.
+
+```bash
+sudo nyx-tweaks                  # the menu
+nyx-tweaks list                  # what is set now, no root needed
+sudo nyx-tweaks set KEY VALUE    # record one change
+sudo nyx-tweaks apply            # make the system match
+sudo nyx-tweaks reset            # back to the defaults
+```
+
+| switch | what it does |
+|---|---|
+| `governor` | CPU frequency governor |
+| `boost` | turbo, where the firmware allows it |
+| `zram` | compressed swap in RAM, sized from RAM or fixed |
+| `thp` | transparent huge pages |
+| `zswap` | compressed swap cache, before it reaches disk |
+| `mitigations` | CPU side-channel mitigation — faster off, less safe |
+| `watchdog` | hardware watchdog, off for boards that reboot on their own |
+| `pstate` | frequency scaling driver, chosen for your CPU vendor |
+| `power-profile` | desktop power profile |
+| `ananicy` | automatic process priorities |
+
+`set` and `apply` are separate on purpose: you can line up several changes and
+write them in one go. The five kernel parameters need a reboot, and `nyx-tweaks`
+reports that by comparing what it wants against `/proc/cmdline`, so it never has
+to guess whether a change is in force.
+
+The parameters live in `/etc/nyx/kernel-params` and are read by
+`/usr/local/lib/nyx/boot-params`, which both bootloader writers use. That is the
+part worth knowing about: writing to `/etc/default/grub` would have done nothing
+on Limine or systemd-boot, and the two scripts that assemble the command line
+had already drifted apart, one of them appending `rootflags=` after the LUKS
+reassignment and the other not.
 
 ### `nyx-updates`
 

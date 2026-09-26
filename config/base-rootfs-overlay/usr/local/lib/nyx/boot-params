@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Single source of truth for the pieces of the kernel command line that Nyx
+# manages.
+#
+#   boot-params base    the parameters a bootloader cannot boot without:
+#                       root=, rootflags=, and the LUKS mapping. Computed from
+#                       /etc/fstab and /etc/crypttab.
+#   boot-params extra   the tunable parameters from /etc/nyx/kernel-params,
+#                       which nyx-tweaks owns.
+#
+# This exists because the two bootloader writers used to build the base command
+# line independently, and a third place was needed for the tunables. Three
+# copies of "root=... rw quiet" is two copies too many: they had already drifted,
+# and the systemd-boot path appended rootflags= after the LUKS reassignment while
+# the Limine path did not.
+#
+# Nothing here writes anything. Callers that change the tunables regenerate their
+# own configuration from these two pieces.
+set -Eeuo pipefail
+
+readonly PARAMS_FILE=/etc/nyx/kernel-params
+
+base_cmdline() {
+    local root_spec="" root_opts="" subvol="" crypt_name="" crypt_uuid=""
+    local cmdline=""
+
+    # /etc/fstab is preferred over findmnt: the target root may be a subvolume or
+    # a LUKS mapping that a chroot cannot always probe.
+    if [[ -r /etc/fstab ]]; then
+        read -r root_spec root_opts < <(awk '$2 == "/" { print $1, $4; exit }' /etc/fstab) || true
+    fi
+    if [[ -z "$root_spec" ]]; then
+        root_spec="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+        root_spec="${root_spec:-LABEL=archroot}"
+    fi
+
+    subvol="$(printf '%s\n' "$root_opts" | tr ',' '\n' | sed -n 's/^subvol=//p' | head -n1 || true)"
+
+    cmdline="root=${root_spec} rw quiet"
+
+    # LUKS: let the initramfs unlock early and point it at the real mapper.
+    if [[ -r /etc/crypttab ]]; then
+        read -r crypt_name crypt_uuid < <(
+            awk '!/^[[:space:]]*#/ && NF >= 2 && $3 != "swap" { print $1, $2; exit }' /etc/crypttab
+        ) || true
+        if [[ -n "$crypt_name" && -n "$crypt_uuid" ]]; then
+            # crypttab stores a bare UUID; the kernel wants the luks- prefixed form.
+            cmdline="rd.luks.uuid=luks-${crypt_uuid#UUID=} root=/dev/mapper/${crypt_name} rw quiet"
+        fi
+    fi
+
+    # Appended last, so it survives the LUKS reassignment above.
+    if [[ -n "$subvol" ]]; then
+        cmdline+=" rootflags=subvol=${subvol}"
+    fi
+
+    printf '%s' "$cmdline"
+}
+
+extra_params() {
+    [[ -r "$PARAMS_FILE" ]] || return 0
+    # Comments and blank lines are dropped. Order is preserved: it is the order
+    # the parameters were written in, and keeping it makes diffing a bootloader
+    # configuration readable.
+    sed 's/[[:space:]]*#.*$//; s/^[[:space:]]*//; s/[[:space:]]*$//' "$PARAMS_FILE" \
+        | grep -v '^$' || true
+}
+
+case "${1:-}" in
+    base)  base_cmdline ;;
+    extra) extra_params ;;
+    path)  printf '%s\n' "$PARAMS_FILE" ;;
+    *)
+        echo "usage: boot-params {base|extra|path}" >&2
+        exit 2
+        ;;
+esac

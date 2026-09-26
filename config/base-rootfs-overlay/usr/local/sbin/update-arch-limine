@@ -43,34 +43,18 @@ if (( install_mode == 0 )) && [[ ! -e "$marker" ]]; then
     exit 0
 fi
 
-# Prefer /etc/fstab (works for LUKS mappers and subvolumes that findmnt in a
-# chroot cannot always resolve); fall back to findmnt.
-root_spec=""
-root_opts=""
-if [[ -r /etc/fstab ]]; then
-    read -r root_spec root_opts < <(awk '$2 == "/" { print $1, $4; exit }' /etc/fstab) || true
-fi
-if [[ -z "$root_spec" ]]; then
-    root_uuid="$(findmnt -n -o UUID / || true)"
-    [[ -n "$root_uuid" ]] || { echo "Cannot determine the root filesystem." >&2; exit 1; }
-    root_spec="UUID=${root_uuid}"
-    root_subvol="$(findmnt -n -o SUBVOL / || true)"
-    root_opts="subvol=${root_subvol#/}"
+# The base parameters and the Nyx tunables come from one place, so that this
+# script and nyx-configure-bootloader cannot drift apart. See boot-params.
+boot_params=/usr/local/lib/nyx/boot-params
+if [[ ! -x "$boot_params" ]]; then
+    echo "${boot_params} is missing; refusing to guess the kernel command line." >&2
+    exit 1
 fi
 
-root_subvol="$(printf '%s\n' "$root_opts" | tr ',' '\n' | sed -n 's/^subvol=//p' | head -n1 || true)"
-cmdline="root=${root_spec} rw quiet"
-if [[ -n "$root_subvol" ]]; then
-    cmdline+=" rootflags=subvol=${root_subvol}"
-fi
-
-if [[ -r /etc/crypttab ]]; then
-    luks_name="$(awk '!/^[[:space:]]*#/ && NF >= 2 && $3 != "swap" { print $1; exit }' /etc/crypttab || true)"
-    luks_uuid="$(awk '!/^[[:space:]]*#/ && NF >= 2 && $3 != "swap" { print $2; exit }' /etc/crypttab || true)"
-    if [[ -n "$luks_name" && -n "$luks_uuid" ]]; then
-        # crypttab stores a bare UUID; the kernel wants the luks- prefixed form.
-        cmdline="rd.luks.uuid=luks-${luks_uuid#UUID=} root=/dev/mapper/${luks_name} rw quiet"
-    fi
+cmdline="$("$boot_params" base)"
+extra="$("$boot_params" extra)"
+if [[ -n "$extra" ]]; then
+    cmdline+=" $extra"
 fi
 
 kernel_name="${kernel_path##*/}"

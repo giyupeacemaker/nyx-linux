@@ -231,6 +231,21 @@ for helper in update-arch-limine nyx-configure-bootloader update-nyx-os-release;
 done
 install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/nyx-update-git" \
     "$BASE_ROOTFS/usr/local/sbin/nyx-update-git"
+# The kernel command line helper. Both bootloader writers refuse to run without
+# it, so a missing execute bit here would break the installer rather than just
+# one bootloader: cp -a carries whatever mode came from the working copy.
+install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/lib/nyx/boot-params" \
+    "$BASE_ROOTFS/usr/local/lib/nyx/boot-params"
+install -d -m 0755 "$BASE_ROOTFS/etc/nyx"
+cat >"$BASE_ROOTFS/etc/nyx/kernel-params" <<'EOF'
+# Nyx kernel parameters, appended after the ones the bootloader cannot boot
+# without. Managed by nyx-tweaks; edit it by hand only if you know why.
+#
+# One parameter per line. Comments and blank lines are ignored. Everything here
+# applies to Limine, systemd-boot and GRUB alike, and takes effect on the next
+# boot.
+EOF
+chmod 0644 "$BASE_ROOTFS/etc/nyx/kernel-params"
 
 # The installed system's own Nyx repository starts out holding the package built
 # into the ISO. nyx-update-git appends newer builds to the same directory, which
@@ -570,6 +585,8 @@ for required in \
     'usr/local/sbin/update-arch-limine' \
     'usr/local/sbin/nyx-configure-bootloader' \
     'usr/local/sbin/nyx-update-git' \
+    'usr/local/lib/nyx/boot-params' \
+    'etc/nyx/kernel-params' \
     'var/cache/nyx-repo/nyx.db.tar.zst' \
     'var/cache/nyx-repo/nyx-tools' \
     'etc/systemd/user/timers.target.wants/nyx-updates.timer' \

@@ -1,0 +1,582 @@
+#!/usr/bin/env bash
+# nyx-tweaks - opinionated switches for the things people spend an evening
+# tuning by hand, and then forget they changed.
+#
+# Every tweak here is a value in a file. None of them needs a kernel patch, and
+# none of them silently downloads anything.
+#
+# The kernel command line was the awkward one. Both bootloader writers used to
+# assemble it from scratch, so there was nowhere for a tunable to live: writing
+# to /etc/default/grub would have done nothing at all on Limine or systemd-boot.
+# The parameters now come from /etc/nyx/kernel-params through boot-params, and
+# every bootloader concatenates the same two pieces.
+set -Eeuo pipefail
+
+readonly STATE=/etc/nyx/tweaks.conf
+readonly PARAMS=/etc/nyx/kernel-params
+readonly BOOT_PARAMS=/usr/local/lib/nyx/boot-params
+readonly CPUPOWER_DEFAULTS=/etc/default/cpupower
+readonly ZRAM_CONF=/etc/systemd/zram-generator.conf
+
+c_reset=''; c_dim=''; c_ok=''; c_warn=''; c_bad=''; c_head=''; c_key=''; c_val=''
+if [[ -t 1 ]]; then
+    c_reset=$'\033[0m'; c_dim=$'\033[2m'; c_ok=$'\033[38;5;114m'
+    c_warn=$'\033[38;5;215m'; c_bad=$'\033[38;5;203m'; c_head=$'\033[1;38;5;39m'
+    c_key=$'\033[38;5;81m'; c_val=$'\033[38;5;186m'
+fi
+head_() { printf '%s%s%s\n' "$c_head" "$*" "$c_reset"; }
+info() { printf '%s\n' "$*"; }
+dim()  { printf '%s%s%s\n' "$c_dim" "$*" "$c_reset"; }
+ok()   { printf '  %s✓%s %s\n' "$c_ok" "$c_reset" "$*"; }
+warn() { printf '  %s!%s %s\n' "$c_warn" "$c_reset" "$*"; }
+err()  { printf '%s✗%s %s\n' "$c_bad" "$c_reset" "$*" >&2; }
+die()  { err "$*"; exit 1; }
+
+need_root() {
+    (( ${EUID:-$(id -u)} == 0 )) || die "нужны права root: sudo nyx-tweaks $*"
+}
+
+# ---------------------------------------------------------------------------
+# The registry. Each entry is key|kind|label|default|reboot|explanation, and the
+# value list. "kind" decides where the value is written:
+#
+#   cpupower  a key in /etc/default/cpupower
+#   zram      the size line in the zram-generator configuration
+#   kparam    a kernel command line parameter, needs a reboot
+#   service   enable or disable a systemd unit
+#   ppd       the power-profiles-daemon profile
+# ---------------------------------------------------------------------------
+
+cpu_vendor() {
+    awk -F: '/vendor_id/{gsub(/[ \t]/,"",$2); print tolower($2); exit}' /proc/cpuinfo 2>/dev/null
+}
+
+# The p-state parameter is vendor specific, and getting it wrong is a boot that
+# behaves strangely rather than one that fails, so it is derived rather than
+# guessed at the call site.
+pstate_param() {
+    local value="$1" vendor
+    vendor="$(cpu_vendor)"
+    case "$value" in
+        active)
+            case "$vendor" in
+                authenticamd|amd*)          printf 'amd_pstate=active' ;;
+                genuineintel)              printf 'intel_pstate=active' ;;
+                *)                         printf 'intel_pstate=active' ;;
+            esac
+            ;;
+        passive)
+            case "$vendor" in
+                authenticamd|amd*)          printf 'amd_pstate=passive' ;;
+                genuineintel)              printf 'intel_pstate=passive' ;;
+                *)                         printf 'intel_pstate=passive' ;;
+            esac
+            ;;
+        guided)  printf 'intel_pstate=guided' ;;   # Intel only, ignored by AMD
+        off)     printf 'intel_pstate=off' ;;
+    esac
+}
+
+# key|kind|values|default|reboot|label
+TWEAKS=(
+"governor|cpupower|performance schedutil powersave ondemand|schedutil|no|CPU frequency governor"
+"boost|cpupower|1 0|1|no|Turbo boost, when the hardware and firmware allow it"
+"zram|zram|half 8G 4G 2G off|half|no|Compressed swap in RAM"
+"thp|kparam|never madvise always|madvise|yes|Transparent huge pages"
+"zswap|kparam|on off|off|yes|Compressed swap cache, before it reaches disk"
+"mitigations|kparam|on off|on|yes|CPU side-channel mitigation"
+"watchdog|kparam|on off|on|yes|Hardware watchdog. off avoids a few reboots on buggy boards"
+"pstate|kparam|active passive guided off|active|yes|Frequency scaling driver"
+"power-profile|ppd|balanced power-saver performance|balanced|no|Desktop power profile"
+"ananicy|service|on off|on|no|Automatic process priorities"
+)
+
+tweak_field() { printf '%s\n' "${TWEAKS[@]}" | awk -F'|' -v k="$1" -v n="$2" '$1==k{print $n}'; }
+tweak_exists() { printf '%s\n' "${TWEAKS[@]}" | cut -d'|' -f1 | grep -qx -- "$1"; }
+tweak_keys()   { printf '%s\n' "${TWEAKS[@]}" | cut -d'|' -f1; }
+
+tweak_values() { tweak_field "$1" 3 | tr ' ' '\n' | grep -v '^$'; }
+tweak_default() { tweak_field "$1" 4; }
+tweak_reboot()  { tweak_field "$1" 5; }
+tweak_label()   { tweak_field "$1" 6; }
+tweak_kind()    { tweak_field "$1" 2; }
+
+# --- state -----------------------------------------------------------------
+
+load_state() {
+    CURRENT=()
+    local key default
+    while IFS= read -r key; do
+        default="$(tweak_default "$key")"
+        local value=""
+        if [[ -r "$STATE" ]]; then
+            value="$(awk -F= -v k="$key" '$1==k{print $2; exit}' "$STATE")"
+        fi
+        CURRENT+=("$key=${value:-$default}")
+    done < <(tweak_keys)
+}
+
+get_value() {
+    local entry
+    for entry in "${CURRENT[@]}"; do
+        [[ "${entry%%=*}" == "$1" ]] && { printf '%s' "${entry#*=}"; return 0; }
+    done
+    tweak_default "$1"
+}
+
+set_value() {
+    local key="$1" value="$2" i found=0
+    for i in "${!CURRENT[@]}"; do
+        if [[ "${CURRENT[$i]%%=*}" == "$key" ]]; then
+            CURRENT[$i]="$key=$value"
+            found=1
+            break
+        fi
+    done
+    (( found )) || CURRENT+=("$key=$value")
+}
+
+valid_value() {
+    tweak_values "$1" | grep -qx -- "$2"
+}
+
+# --- writers ---------------------------------------------------------------
+
+# Rewrite a KEY="value" style line in a shell defaults file, adding it when it is
+# absent. Written as a whole file rewrite rather than a sed, because a partially
+# applied file is worse than a failed one.
+set_shell_default() {
+    local file="$1" key="$2" value="$3" tmp found=0
+    tmp="$(mktemp)"
+    if [[ -f "$file" ]]; then
+        while IFS= read -r line; do
+            if [[ "$line" == "$key="* || "$line" == "$key = "* ]]; then
+                printf '%s="%s"\n' "$key" "$value" >>"$tmp"
+                found=1
+            else
+                printf '%s\n' "$line" >>"$tmp"
+            fi
+        done <"$file"
+    fi
+    (( found )) || printf '%s="%s"\n' "$key" "$value" >>"$tmp"
+    install -Dm0644 "$tmp" "$file"
+    rm -f "$tmp"
+}
+
+# The kernel parameters are rebuilt from the whole registry every time, rather
+# than appended to. Appending would make a parameter that was turned off
+# impossible to remove, and the file is the only place these live.
+write_kernel_params() {
+    local tmp key kind value
+    tmp="$(mktemp)"
+
+    cat >"$tmp" <<'EOF'
+# Nyx kernel parameters, appended after the ones the bootloader cannot boot
+# without. Managed by nyx-tweaks; edit it by hand only if you know why.
+#
+# One parameter per line. Comments and blank lines are ignored. Everything here
+# applies to Limine, systemd-boot and GRUB alike, and takes effect on the next
+# boot.
+EOF
+
+    while IFS= read -r key; do
+        kind="$(tweak_kind "$key")"
+        [[ "$kind" == kparam ]] || continue
+        value="$(get_value "$key")"
+        local param=""
+        case "$key" in
+            thp)         [[ "$value" == madvise ]] || param="transparent_hugepage=$value" ;;
+            zswap)       [[ "$value" == on ]]     && param="zswap.enabled=1" ;;
+            mitigations) [[ "$value" == off ]]    && param="mitigations=off" ;;
+            watchdog)    [[ "$value" == off ]]    && param="nowatchdog" ;;
+            pstate)                                 param="$(pstate_param "$value")" ;;
+        esac
+        [[ -n "$param" ]] && printf '%s\n' "$param" >>"$tmp"
+    done < <(tweak_keys)
+
+    install -Dm0644 "$tmp" "$PARAMS"
+    rm -f "$tmp"
+}
+
+write_zram() {
+    local value="$1" size
+    case "$value" in
+        half) size="min(ram, 4G)" ;;   # enough for most desktops, not a RAM hog
+        8G)  size="8G" ;;
+        4G)  size="4G" ;;
+        2G)  size="2G" ;;
+        off) size="0" ;;
+        *)   die "unknown zram size: $value" ;;
+    esac
+    local tmp; tmp="$(mktemp)"
+    {
+        printf '[zram0]\n'
+        printf 'zram-size = %s\n' "$size"
+        printf 'compression-algorithm = zstd\n'
+        # The physical swap device is disabled, otherwise the kernel keeps using
+        # it in preference to the zram device that sits earlier in the list.
+        printf 'swap-priority = 100\n'
+    } >"$tmp"
+    install -Dm0644 "$tmp" "$ZRAM_CONF"
+    rm -f "$tmp"
+}
+
+write_state() {
+    local tmp entry; tmp="$(mktemp)"
+    {
+        printf '# Nyx tweaks, written by nyx-tweaks. The values here are the ones\n'
+        printf '# that were applied; the system may still differ until "apply" ran.\n'
+        for entry in "${CURRENT[@]}"; do
+            printf '%s\n' "$entry"
+        done
+    } >"$tmp"
+    install -Dm0644 "$tmp" "$STATE"
+    rm -f "$tmp"
+}
+
+# --- bootloader regeneration ----------------------------------------------
+
+# Only the pieces that carry a kernel command line are touched, and each is
+# rebuilt from boot-params so the base parameters and the tunables stay in step.
+regenerate_bootloader() {
+    local base extra attempted=0
+    base="$("$BOOT_PARAMS" base)"
+    extra="$("$BOOT_PARAMS" extra)"
+
+    if [[ -e /boot/.arch-limine ]] || [[ -f /boot/limine.conf ]]; then
+        if command -v update-arch-limine >/dev/null 2>&1; then
+            attempted=1
+            if update-arch-limine >/dev/null 2>&1; then
+                ok "Limine configuration regenerated"
+            else
+                warn "update-arch-limine reported an error; Limine left as it was"
+            fi
+        fi
+    fi
+
+    local entry=/boot/loader/entries/10-nyx-linux.conf
+    if [[ -f "$entry" ]]; then
+        attempted=1
+        local line="options  $base${extra:+ $extra}"
+        if sed -i "s|^options .*|${line}|" "$entry" 2>/dev/null; then
+            ok "systemd-boot entry updated"
+        else
+            warn "could not rewrite $entry"
+        fi
+    fi
+
+    # GRUB takes the tunables only: grub-mkconfig emits root= on its own, and
+    # repeating it would put two conflicting values on the linux line.
+    # /etc/default/grub exists on any system with the grub package, so its mere
+    # presence says nothing; the menu it was written to is what counts.
+    if [[ -f /etc/default/grub ]] && [[ -d /boot/grub || -f /boot/grub/grub.cfg ]]; then
+        attempted=1
+        if grep -q '^GRUB_CMDLINE_LINUX=' /etc/default/grub; then
+            sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"${extra}\"|" /etc/default/grub
+        else
+            printf 'GRUB_CMDLINE_LINUX="%s"\n' "$extra" >>/etc/default/grub
+        fi
+        if command -v grub-mkconfig >/dev/null 2>&1; then
+            if grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1; then
+                ok "GRUB configuration regenerated"
+            else
+                warn "grub-mkconfig reported an error; GRUB left as it was"
+            fi
+        fi
+    fi
+
+    # Only complain about a missing bootloader when there was nothing to find.
+    # Reporting it after a failed regeneration would bury the real message.
+    (( attempted )) || warn "no bootloader configuration was found to update"
+    return 0
+}
+
+# A parameter is only actually in force once the running command line carries it.
+# Comparing against /proc/cmdline is exact, where guessing from the files is not.
+pending_reboot() {
+    local param
+    while IFS= read -r param; do
+        [[ -n "$param" ]] || continue
+        case " $(cat /proc/cmdline 2>/dev/null || true) " in
+            *" $param "*) ;;
+            *) printf '%s\n' "$param"; return 0 ;;
+        esac
+    done < <("$BOOT_PARAMS" extra)
+    return 1
+}
+
+# --- apply -----------------------------------------------------------------
+
+apply_all() {
+    need_root apply
+    # Without this the whole registry reads as empty and every value silently
+    # falls back to its default: the process starts with no CURRENT array, so
+    # apply would undo whatever "set" recorded.
+    load_state
+    local key kind value
+
+    for key in governor boost; do
+        value="$(get_value "$key")"
+        [[ "$key" == governor ]] && set_shell_default "$CPUPOWER_DEFAULTS" GOVERNOR "$value"
+        [[ "$key" == boost ]] && set_shell_default "$CPUPOWER_DEFAULTS" CPU_BOOST "$value"
+        [[ "$key" == boost ]] && set_shell_default "$CPUPOWER_DEFAULTS" AMD_BOOST "$value"
+    done
+
+    if command -v cpupower >/dev/null 2>&1; then
+        systemctl restart cpupower.service >/dev/null 2>&1 || \
+            warn "the cpupower service did not restart; it will pick the values up on next boot"
+    fi
+
+    value="$(get_value zram)"
+    if [[ "$value" == off ]]; then
+        if [[ -f "$ZRAM_CONF" ]]; then
+            rm -f "$ZRAM_CONF"
+            ok "zram turned off in the configuration"
+        fi
+    else
+        write_zram "$value"
+        ok "zram size set from the registry"
+    fi
+    if command -v zramctl >/dev/null 2>&1; then
+        systemctl restart systemd-zram-setup@zram0.service >/dev/null 2>&1 || true
+    fi
+
+    write_kernel_params
+    ok "kernel parameters written"
+
+    value="$(get_value ananicy)"
+    if [[ "$value" == on ]]; then
+        if systemctl list-unit-files ananicy-cpp.service >/dev/null 2>&1; then
+            systemctl enable --now ananicy-cpp.service >/dev/null 2>&1 && \
+                ok "ananicy enabled" || warn "ananicy did not start"
+        else
+            dim "ananicy-cpp is not installed, so there is nothing to enable"
+        fi
+    else
+        systemctl disable --now ananicy-cpp.service >/dev/null 2>&1 && \
+            ok "ananicy disabled" || true
+    fi
+
+    value="$(get_value power-profile)"
+    if command -v powerprofilesctl >/dev/null 2>&1; then
+        powerprofilesctl set "$value" >/dev/null 2>&1 && \
+            ok "power profile: $value" || warn "power-profiles-daemon refused '$value'"
+    else
+        dim "power-profiles-daemon is not installed, so the profile is not applied"
+    fi
+
+    regenerate_bootloader
+    write_state
+
+    printf '\n'
+    local pending
+    if pending="$(pending_reboot)"; then
+        warn "these parameters are not in force until the next boot:"
+        printf '      %s\n' $pending
+        printf '\n'
+        dim "  reboot when convenient:  sudo reboot"
+    else
+        ok "everything is in force, no reboot needed"
+    fi
+}
+
+# --- output ----------------------------------------------------------------
+
+cmd_list() {
+    load_state
+    head_ "Nyx tweaks"
+    printf '\n'
+    local key label value default mark
+    for key in $(tweak_keys); do
+        label="$(tweak_label "$key")"
+        value="$(get_value "$key")"
+        default="$(tweak_default "$key")"
+        if [[ "$value" == "$default" ]]; then mark="$c_dim"; else mark="$c_val"; fi
+        printf '  %s%-13s%s %s%-12s%s %s\n' \
+            "$c_key" "$key" "$c_reset" "$mark" "$value" "$c_reset" "$c_dim$label$c_reset"
+    done
+    printf '\n'
+    dim "  values in dim colour are the defaults"
+    printf '  change one with:  nyx-tweaks set <key> <value>\n'
+    printf '  write them out:   nyx-tweaks apply\n\n'
+    if pending_reboot >/dev/null; then
+        warn "a reboot is pending for the kernel parameters"
+        printf '\n'
+    fi
+}
+
+cmd_get() {
+    local key="${1:-}"
+    [[ -n "$key" ]] || die "usage: nyx-tweaks get <key>"
+    tweak_exists "$key" || die "unknown tweak: $key  (try: $(tweak_keys | tr '\n' ' '))"
+    load_state
+    get_value "$key"
+}
+
+cmd_set() {
+    local key="${1:-}" value="${2:-}"
+    [[ -n "$key" && -n "$value" ]] || die "usage: nyx-tweaks set <key> <value>"
+    tweak_exists "$key" || die "unknown tweak: $key  (try: $(tweak_keys | tr '\n' ' '))"
+    valid_value "$key" "$value" || \
+        die "'$value' is not valid for $key. Try: $(tweak_values "$key" | tr '\n' ' ')"
+    need_root "set $key $value"
+    load_state
+    set_value "$key" "$value"
+    # Record the intent straight away. Holding it only in memory would mean the
+    # next invocation forgets it, and "set" followed by "apply" would apply the
+    # defaults instead of what was just asked for.
+    write_state
+    printf '%s = %s\n' "$key" "$value"
+    printf '%s\n' "$c_dim" "recorded. run 'nyx-tweaks apply' to write it into the system" "$c_reset"
+}
+
+cmd_reset() {
+    need_root reset
+    local key
+    for key in $(tweak_keys); do
+        set_value "$key" "$(tweak_default "$key")"
+    done
+    # Write before applying. apply_all reloads the state file at its start, so a
+    # reset held only in memory would be discarded there and the previous values
+    # would be reapplied on top of the defaults.
+    write_state
+    apply_all
+}
+
+# --- interactive -----------------------------------------------------------
+
+# A plain numbered menu rather than a GUI dependency. It works over a serial
+# console and over SSH, which is exactly when somebody is most likely to be
+# changing these values.
+menu_pick_key() {
+    # The menu records choices in /etc/nyx/tweaks.conf, so it is an admin tool.
+    need_root "the menu"
+    load_state
+    local key label value default i
+    head_ "  Nyx tweaks — what to change?"
+    printf '\n'
+    i=0
+    for key in $(tweak_keys); do
+        i=$(( i + 1 ))
+        label="$(tweak_label "$key")"
+        value="$(get_value "$key")"
+        default="$(tweak_default "$key")"
+        local mark="$c_dim"
+        [[ "$value" == "$default" ]] || mark="$c_val"
+        printf '   %s%2d%s  %s%-11s%s %s%-11s%s %s%s%s\n' \
+            "$c_key" "$i" "$c_reset" "$c_key" "$key" "$c_reset" \
+            "$mark" "$value" "$c_reset" "$c_dim" "$label" "$c_reset"
+    done
+    printf '\n    %s%2d%s  apply everything now\n' "$c_key" "$(( i + 1 ))" "$c_reset"
+    printf '    %s%2d%s  back to the defaults\n' "$c_key" "$(( i + 2 ))" "$c_reset"
+    printf '    %s%2d%s  quit\n' "$c_key" "$(( i + 3 ))" "$c_reset"
+    printf '\n  '
+
+    local choice
+    read -r choice || { printf '\n'; return 1; }
+    [[ "$choice" =~ ^[0-9]+$ ]] || { warn "not a number"; return 1; }
+
+    local -a keys=()
+    while IFS= read -r k; do keys+=("$k"); done < <(tweak_keys)
+    local total=${#keys[@]}
+
+    case "$choice" in
+        $(( total + 1 ))) apply_all; return 0 ;;
+        $(( total + 2 ))) cmd_reset;   return 0 ;;
+        $(( total + 3 ))) return 0 ;;
+    esac
+    (( choice >= 1 && choice <= total )) || { warn "out of range"; return 1; }
+
+    key="${keys[$(( choice - 1 ))]}"
+    printf '\n'
+    menu_pick_value "$key"
+}
+
+menu_pick_value() {
+    local key="$1" value i
+
+    head_ "  $key — $(tweak_label "$key")"
+    case "$(tweak_reboot "$key")" in
+        yes) dim "  takes effect after a reboot" ;;
+    esac
+    printf '\n'
+    i=0
+    while IFS= read -r value; do
+        i=$(( i + 1 ))
+        local mark="   "
+        [[ "$value" == "$(get_value "$key")" ]] && mark="${c_ok}→ ${c_reset}"
+        printf '   %s%2d%s %s%-14s %s%s%s\n' \
+            "$c_key" "$i" "$c_reset" "$mark" "$value" \
+            "$c_dim" "$(tweak_note "$key" "$value")" "$c_reset"
+    done < <(tweak_values "$key")
+
+    printf '\n  '
+
+    local choice
+    read -r choice || return 1
+    [[ "$choice" =~ ^[0-9]+$ ]] || { warn "not a number"; return 1; }
+
+    local -a all=()
+    while IFS= read -r v; do all+=("$v"); done < <(tweak_values "$key")
+    (( choice >= 1 && choice <= ${#all[@]} )) || { warn "out of range"; return 1; }
+
+    set_value "$key" "${all[$(( choice - 1 ))]}"
+    # Persist immediately: quitting the menu halfway through must not throw away
+    # the earlier answers.
+    write_state
+    ok "$key = ${all[$(( choice - 1 ))]}  recorded"
+    printf '\n'
+    return 0
+}
+
+tweak_note() {
+    local key="$1" value="$2"
+    case "$key:$value" in
+        mitigations:off)  printf 'faster, and less safe. read the trade-off first' ;;
+        watchdog:off)     printf 'for boards that reboot on their own' ;;
+        zswap:on)         printf 'less disk I/O, very slightly slower reads' ;;
+        pstate:active)    printf 'the modern driver, for amd and intel' ;;
+        pstate:off)       printf 'the driver will refuse to load' ;;
+        zram:half)        printf 'a quarter of RAM, rounded, capped at 4G' ;;
+        ananicy:on)       printf 'desktop programs are already well behaved' ;;
+        *)                printf '' ;;
+    esac
+}
+
+usage() {
+    cat <<'EOF'
+Nyx tweaks — opinionated switches for the usual tuning
+
+  sudo nyx-tweaks        open the menu
+  nyx-tweaks list        show what is set now          (no root needed)
+  nyx-tweaks get KEY     print one value               (no root needed)
+  sudo nyx-tweaks set KEY VAL   change one value
+  sudo nyx-tweaks apply  write everything out
+  sudo nyx-tweaks reset  back to the defaults, then apply
+
+Keys: governor boost zram thp zswap mitigations watchdog pstate
+      power-profile ananicy
+
+"set" records what you want, "apply" makes the system match. They are separate
+on purpose: you can line up several changes and write them in one go.
+
+The kernel parameters are written to /etc/nyx/kernel-params and reach Limine,
+systemd-boot and GRUB alike. They apply on the next boot, and nyx-tweaks says so
+when one is still not in force.
+EOF
+}
+
+main() {
+    case "${1:-}" in
+        "")            menu_pick_key || true ;;
+        list|show)     cmd_list ;;
+        get)           shift; cmd_get "${1:-}" ;;
+        set)           shift; cmd_set "${1:-}" "${2:-}" ;;
+        apply)         apply_all ;;
+        reset)         cmd_reset ;;
+        -h|--help|help) usage ;;
+        *)             err "unknown command: $1"; usage; exit 1 ;;
+    esac
+}
+
+main "$@"

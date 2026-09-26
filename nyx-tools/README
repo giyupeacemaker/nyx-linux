@@ -2,7 +2,38 @@ Nyx Linux tools
 
   nyx-updates     what is available to install. Installs nothing.
   nyx-rollback    filesystem snapshots, and a way back after a bad update.
+  nyx-tweaks      ten opinionated switches, and a menu to set them.
   nyx-update-git  fetch and rebuild these tools from the GitHub repository.
+
+nyx-tweaks
+
+  sudo nyx-tweaks                  the menu
+  nyx-tweaks list                  what is set now, no root needed
+  nyx-tweaks get KEY               one value
+  sudo nyx-tweaks set KEY VALUE    record one change
+  sudo nyx-tweaks apply            make the system match
+  sudo nyx-tweaks reset            back to the defaults, then apply
+
+  set and apply are separate on purpose: line up several changes, write them in
+  one go, and see exactly what is about to happen.
+
+  The ten switches: governor, boost, zram, thp, zswap, mitigations, watchdog,
+  pstate, power-profile, ananicy.
+
+  The five that touch the kernel command line (thp, zswap, mitigations, watchdog,
+  pstate) need a reboot, and nyx-tweaks says so by comparing what it wants
+  against /proc/cmdline rather than guessing. The rest take effect immediately.
+
+  Where the parameters live, and why it matters:
+
+    /etc/nyx/kernel-params              one per line, managed by nyx-tweaks
+    /usr/local/lib/nyx/boot-params      builds the two halves of the command line
+    /etc/nyx/tweaks.conf                what you asked for, which "apply" matches
+
+  Both bootloader writers read that same helper, so a parameter set here reaches
+  Limine, systemd-boot and GRUB alike. Writing to /etc/default/grub instead
+  would have done nothing at all on the first two, which is why the command line
+  is not assembled independently in three places.
 
 About nyx-update-git
 

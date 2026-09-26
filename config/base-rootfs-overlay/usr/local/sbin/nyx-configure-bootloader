@@ -44,43 +44,23 @@ if [[ -z "$kernel_path" || -z "$initramfs_path" ]]; then
     exit 1
 fi
 
-# --- Kernel command line (mirrors what Limine and systemd-boot need) --------
-# Prefer /etc/fstab (written by the fstab module) over findmnt, because the
-# target root may be a subvolume or a LUKS mapping that the chroot cannot probe.
-build_cmdline() {
-    local root_spec="" root_opts="" subvol="" cmdline="" crypt_name="" crypt_uuid=""
+# --- Kernel command line ---------------------------------------------------
+# Both the required parameters and the Nyx tunables come from boot-params, the
+# same helper update-arch-limine uses. It used to be built here separately, and
+# the two copies had already drifted: this one appended rootflags= after the
+# LUKS reassignment, the Limine one did not.
+boot_params=/usr/local/lib/nyx/boot-params
+if [[ ! -x "$boot_params" ]]; then
+    err "The kernel command line helper $boot_params is missing from the target rootfs."
+    exit 1
+fi
 
-    if [[ -r /etc/fstab ]]; then
-        read -r root_spec root_opts < <(awk '$2 == "/" { print $1, $4; exit }' /etc/fstab) || true
-    fi
-    if [[ -z "$root_spec" ]]; then
-        root_spec="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
-        root_spec="${root_spec:-LABEL=archroot}"
-    fi
+CMDLINE="$("$boot_params" base)"
+extra_params="$("$boot_params" extra)"
+if [[ -n "$extra_params" ]]; then
+    CMDLINE+=" $extra_params"
+fi
 
-    subvol="$(printf '%s\n' "$root_opts" | tr ',' '\n' | sed -n 's/^subvol=//p' | head -n1 || true)"
-
-    cmdline="root=${root_spec} rw quiet"
-
-    # LUKS: let the initramfs unlock early and point it at the real mapper.
-    if [[ -r /etc/crypttab ]]; then
-        read -r crypt_name crypt_uuid < <(
-            awk '!/^[[:space:]]*#/ && NF >= 2 && $3 != "swap" { print $1, $2; exit }' /etc/crypttab
-        ) || true
-        if [[ -n "$crypt_name" && -n "$crypt_uuid" ]]; then
-            # crypttab stores a bare UUID; the kernel wants the luks- prefixed form.
-            cmdline="rd.luks.uuid=luks-${crypt_uuid#UUID=} root=/dev/mapper/${crypt_name} rw quiet"
-        fi
-    fi
-
-    if [[ -n "$subvol" ]]; then
-        cmdline+=" rootflags=subvol=${subvol}"
-    fi
-
-    printf '%s' "$cmdline"
-}
-
-CMDLINE="$(build_cmdline)"
 kernel_name="${kernel_path##*/}"
 initramfs_name="${initramfs_path##*/}"
 
@@ -180,6 +160,19 @@ configure_grub() {
               "GRUB_TERMINAL_OUTPUT=console" "GRUB_DISABLE_RECOVERY=true"; do
         grep -q "^${kv%%=*}=" /etc/default/grub || printf '%s\n' "$kv" >>/etc/default/grub
     done
+
+    # Only the Nyx tunables, not the base parameters: grub-mkconfig emits root=
+    # itself, and repeating it here would put two conflicting values on the linux
+    # line. This is the one place where base and extra are deliberately not
+    # concatenated, so it is worth saying so at the point of use.
+    if [[ -n "$extra_params" ]]; then
+        if grep -q '^GRUB_CMDLINE_LINUX=' /etc/default/grub; then
+            sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$extra_params\"|" \
+                /etc/default/grub
+        else
+            printf 'GRUB_CMDLINE_LINUX="%s"\n' "$extra_params" >>/etc/default/grub
+        fi
+    fi
 
     grub-install --target=x86_64-efi --efi-directory="$esp" \
         --bootloader-id=NyxLinux --recheck

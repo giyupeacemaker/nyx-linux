@@ -45,6 +45,20 @@ is_shell_script() {
 code_only() {
     sed 's/^[[:space:]]*#.*$//; s/[[:space:]]#.*$//' "$1"
 }
+
+# Extract one shell function body: from "name() {" to the first line that is
+# only a closing brace. Used instead of "grep -A<n>", because a handful of
+# comment lines inside a function silently moves the line of interest out of
+# any fixed window, and the check then fails for a reason that has nothing to do
+# with the code.
+func_body() {
+    local name="$1" file="$2"
+    awk -v fn="$name" '
+        $0 ~ "^"fn"\\(\\)[[:space:]]*\\{" { inside=1; next }
+        inside && /^[[:space:]]*\}[[:space:]]*$/ { exit }
+        inside { print }
+    ' "$file"
+}
 mapfile -t scripts < <(
     printf '%s\n' build.sh validate.sh vm-install-arch.sh
     find config/base-rootfs-overlay -type f 2>/dev/null
@@ -835,6 +849,140 @@ if grep -qE 'repo-add[^|]*nyx\.db([^.]|$)' build.sh; then
     bad "repo-add is called with a bare nyx.db; it needs the full archive extension"
 else
     ok "repo-add is given a full database archive name"
+fi
+
+# --------------------------------------------------------------------------
+sect "kernel command line and nyx-tweaks"
+# The tunables need somewhere to live. Both bootloader writers used to assemble
+# the command line from scratch, so writing to /etc/default/grub would have done
+# nothing on Limine or systemd-boot, and a parameter set by nyx-tweaks would
+# have been silently dropped. The command line is now built in one place.
+BP=config/base-rootfs-overlay/usr/local/lib/nyx/boot-params
+if [[ -f "$BP" ]] && is_shell_script "$BP"; then
+    ok "boot-params helper present"
+else
+    bad "boot-params helper missing or not a shell script"
+fi
+for mode in base extra path; do
+    if code_only "$BP" | grep -q "^    $mode)"; then
+        ok "boot-params answers '$mode'"
+    else
+        bad "boot-params has no '$mode' command"
+    fi
+done
+if grep -q 'boot-params extra' "$BP"; then
+    ok "boot-params strips comments out of the tunable parameters"
+else
+    bad "boot-params does not clean the tunable parameters"
+fi
+
+# Both writers must read the shared helper rather than their own copy. The call
+# is spelled cmdline="$("$boot_params" base)", so look for the invocation, not
+# for the words "boot-params base" that appear in no script.
+for w in update-arch-limine nyx-configure-bootloader; do
+    path="config/base-rootfs-overlay/usr/local/sbin/$w"
+    if [[ ! -f "$path" ]]; then bad "$w is missing"; continue; fi
+    if grep -q 'boot_params" base' "$path"; then
+        ok "$w takes the base parameters from boot-params"
+    else
+        bad "$w does not ask boot-params for the base parameters"
+    fi
+    if grep -q 'boot_params" extra' "$path"; then
+        ok "$w appends the Nyx tunables"
+    else
+        bad "$w ignores the Nyx tunables; they would never reach this bootloader"
+    fi
+    # A leftover copy of the old assembly is the thing most likely to come back.
+    if grep -q 'build_cmdline' "$path"; then
+        bad "$w still defines build_cmdline; that is the duplication boot-params removed"
+    else
+        ok "$w has no leftover command line builder"
+    fi
+done
+
+# GRUB is the one place where base and extra are deliberately not concatenated,
+# because grub-mkconfig writes root= itself. Check it is actually done.
+cbl="$(code_only config/base-rootfs-overlay/usr/local/sbin/nyx-configure-bootloader)"
+if grep -q 'GRUB_CMDLINE_LINUX' <<<"$cbl"; then
+    ok "the GRUB path passes the tunables through GRUB_CMDLINE_LINUX"
+else
+    bad "the GRUB path drops the Nyx tunables"
+fi
+
+if grep -q 'usr/local/lib/nyx/boot-params' build.sh; then
+    ok "build.sh installs boot-params with the execute bit forced"
+else
+    bad "build.sh does not install boot-params"
+fi
+if grep -q 'etc/nyx/kernel-params' build.sh; then
+    ok "build.sh seeds /etc/nyx/kernel-params"
+else
+    bad "build.sh does not seed the kernel parameters file"
+fi
+
+# --- nyx-tweaks ------------------------------------------------------------
+TW=nyx-tools/tweaks
+if [[ -f "$TW" ]] && is_shell_script "$TW"; then
+    ok "nyx-tweaks present"
+else
+    bad "nyx-tweaks missing or not a shell script"
+fi
+if [[ -f "$TW" ]]; then
+    tw="$(code_only "$TW")"
+    # Ten switches is the promise the README makes; count the registry rows.
+    n=$(grep -cE '^"[a-z-]+\|(cpupower|zram|kparam|service|ppd)\|' "$TW" || true)
+    if [[ "$n" == 10 ]]; then
+        ok "nyx-tweaks registers exactly 10 switches"
+    else
+        bad "nyx-tweaks registers $n switches, expected 10"
+    fi
+    if grep -q 'need_root "set ' <<<"$tw" && grep -q 'write_state' <<<"$tw"; then
+        ok "nyx-tweaks records a change instead of only printing it"
+    else
+        bad "nyx-tweaks does not persist a value that was set"
+    fi
+    # The bug that mattered: apply has to start from the recorded state. A
+    # registry rebuilt from defaults on every call silently undoes whatever the
+    # user just asked for, and every value looks like it was applied.
+    if func_body apply_all "$TW" | grep -q 'load_state'; then
+        ok "apply_all starts from the recorded state, not from defaults"
+    else
+        bad "apply_all ignores the recorded state and would apply the defaults"
+    fi
+    # Same trap: a reset held only in memory is lost by the reload in apply_all.
+    if func_body cmd_reset "$TW" | grep -q 'write_state'; then
+        ok "reset writes the defaults before applying them"
+    else
+        bad "reset is discarded by the reload inside apply_all"
+    fi
+    # Kernel parameters are rebuilt whole, not appended to, otherwise a switch
+    # that was turned off could never be removed.
+    if grep -q 'write_kernel_params' <<<"$tw"; then
+        ok "kernel parameters are rewritten whole rather than appended to"
+    else
+        bad "kernel parameters are appended to, so a switch cannot be turned off"
+    fi
+    if grep -q 'pending_reboot' <<<"$tw"; then
+        ok "nyx-tweaks reports a pending reboot by comparing /proc/cmdline"
+    else
+        bad "nyx-tweaks does not say when a parameter is not yet in force"
+    fi
+    # Turning a switch off has to remove its parameter, not merely stop adding
+    # it on the next run.
+    for pair in 'mitigations:off:mitigations=off' 'watchdog:off:nowatchdog' 'zswap:on:zswap.enabled=1'; do
+        key="${pair%%:*}"; rest="${pair#*:}"
+        val="${rest%%:*}"; want="${rest#*:}"
+        if func_body write_kernel_params "$TW" | grep -qF -- "$key"; then
+            ok "$key = $val contributes '$want'"
+        else
+            bad "$key has no case in write_kernel_params"
+        fi
+    done
+fi
+if grep -q 'tweaks' nyx-tools/PKGBUILD; then
+    ok "nyx-tools ships nyx-tweaks"
+else
+    bad "nyx-tools does not install nyx-tweaks"
 fi
 
 # --------------------------------------------------------------------------
