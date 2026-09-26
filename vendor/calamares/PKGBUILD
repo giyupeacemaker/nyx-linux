@@ -72,6 +72,19 @@ build() {
 
   # The vendored tarball has a single top-level directory named "calamares"
   # (not "calamares-${pkgver}"), so point cmake at that.
+  #
+  # On -DUSE_services=systemd: Calamares splits a module name at the FIRST
+  # hyphen, so for "services-systemd" the category is "services" and the
+  # implementation is "systemd". USE_services is therefore compared against
+  # "systemd", not against the full module name. Passing the full name made every
+  # services-* module get skipped and the installer refused to start.
+  #
+  # Note where this comment sits. It cannot go between the backslash-continued
+  # lines of the cmake call: bash treats the "#" as a comment, swallows the rest
+  # of that line including the continuation, and the next -D flag then arrives as
+  # a command of its own. That is exactly how the flag above ended up as
+  # "-DUSE_services=systemd: command not found" and the build failed after cmake
+  # had already configured successfully.
   cmake -B build -S "${srcdir}/calamares" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr \
@@ -84,11 +97,6 @@ build() {
     -DINSTALL_CONFIG=ON \
     -DBUILD_TESTING=OFF \
     -DBUILD_SCHEMA_TESTING=OFF \
-    # Calamares splits a module name at the FIRST hyphen: for
-    # "services-systemd" the category is "services" and the implementation is
-    # "systemd". USE_services is therefore compared against "systemd", not
-    # against the full module name. Passing the full name made every
-    # services-* module get skipped and the installer refused to start.
     -DUSE_services=systemd \
     -DSKIP_MODULES="${skip_modules[*]}"
   cmake --build build

@@ -1143,6 +1143,51 @@ else
     bad "nyx-tools does not install nyx-update"
 fi
 
+# A comment cannot sit between the backslash-continued lines of a command. Bash
+# treats the "#" as the start of a comment, swallows the rest of that line
+# including the continuation, and the next argument then arrives as a command of
+# its own. This cost a full build: the -DUSE_services flag below turned into
+# "-DUSE_services=systemd: command not found" after cmake had already configured.
+# Any shell file can hit it, so the check is not limited to the PKGBUILD.
+check_no_comment_in_continuation() {
+    local file="$1" hits=""
+    local prev="" line n=0
+    while IFS= read -r line; do
+        n=$(( n + 1 ))
+        if [[ "$prev" == *'\' ]]; then
+            # A comment right after a continuation swallows the continuation.
+            if [[ "$line" =~ ^[[:space:]]*# ]]; then
+                hits+=" line $n"
+            fi
+        fi
+        prev="$line"
+    done <"$file"
+    if [[ -z "$hits" ]]; then
+        ok "$(basename "$file") has no comment inside a continued command"
+    else
+        bad "$(basename "$file") has a comment after a line continuation:${hits}"
+        bad "  bash eats the continuation and the next argument becomes a command"
+    fi
+}
+for sf in vendor/calamares/PKGBUILD build.sh config/live-setup.sh \
+          config/base-rootfs-overlay/usr/local/lib/nyx/boot-params \
+          config/base-rootfs-overlay/usr/local/sbin/nyx-configure-bootloader \
+          config/base-rootfs-overlay/usr/local/sbin/update-arch-limine \
+          config/base-rootfs-overlay/usr/local/sbin/nyx-update-git \
+          config/base-rootfs-overlay/usr/local/sbin/nyx-motd; do
+    [[ -f "$sf" ]] && check_no_comment_in_continuation "$sf"
+done
+
+# The flag that the comment above is about has to be on one continued line, not
+# split, and it has to name the implementation rather than the module. Only the
+# line itself is checked: a comment *above* the command is safe and is where the
+# explanation belongs, so matching "#" anywhere near it would be a false alarm.
+if grep -qE '^[[:space:]]+-DUSE_services=systemd \\$' vendor/calamares/PKGBUILD; then
+    ok "the USE_services flag is a single continued line"
+else
+    bad "the USE_services flag is not a single continued line"
+fi
+
 # --------------------------------------------------------------------------
 printf '\n\033[1mChecks passed: %d, failed: %d\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
