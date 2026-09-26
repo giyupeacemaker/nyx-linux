@@ -111,14 +111,43 @@ The helper tools ship as one ordinary Arch package, so pacman owns them and a
 system update brings a new version along:
 
 - `nyx-updates` — what is available to install. Installs nothing
+- `nyx-update` — Arch news, a snapshot, then the update, in that order
 - `nyx-rollback` — filesystem snapshots, and a way back after a bad update
-- `nyx-tweaks` — ten opinionated switches, and a menu to set them
+- `nyx-tweaks` — eleven opinionated switches, and a menu to set them
+- `nyx-motd` — the login greeting
 - `nyx-apply-wallpaper` — applies the default background on first login
+
+### `nyx-update`
+
+Arch breaks in one specific way: a partial upgrade. Holding pacman back on a
+library while everything else moves is how a system that was fine yesterday
+starts failing today, which is why Arch publishes upgrade news at all. The news
+is right there and most people never read it.
+
+```bash
+sudo nyx-update           # news, snapshot, then the update
+nyx-update --news         # only the news since you last updated
+nyx-update --check        # what is waiting, install nothing
+sudo nyx-update --skip-news
+sudo nyx-update --no-snapshot
+```
+
+The snapshot is taken before anything is removed, and if the machine does not
+come back up, `nyx-rollback list` followed by `nyx-rollback revert <number>`
+goes back to it. A newer kernel is called out at the end, because a running
+kernel cannot change under a live system and the update is not finished until
+you restart.
+
+Nothing is decided for you: there is no `-y`, every package pacman is about to
+touch is asked about, and a removal is spelled out. `--news` stops after reading
+and updates nothing.
+
 
 ### `nyx-tweaks`
 
-Ten switches for the things people spend an evening tuning by hand. Every one of
-them is a value in a file; none needs a kernel patch, and none downloads anything.
+Eleven switches for the things people spend an evening tuning by hand. Every one
+of them is a value in a file; none needs a kernel patch, and none downloads
+anything.
 
 ```bash
 sudo nyx-tweaks                  # the menu
@@ -140,6 +169,34 @@ sudo nyx-tweaks reset            # back to the defaults
 | `pstate` | frequency scaling driver, chosen for your CPU vendor |
 | `power-profile` | desktop power profile |
 | `ananicy` | automatic process priorities |
+| `congestion` | network congestion control: `cubic`, `bbr`, `bbr3` |
+
+`congestion` is the one worth knowing about. BBR and BBR3 are already built into
+the CachyOS kernel this distribution installs, as modules, so turning one on
+costs no package, no disk and no reboot. It is a real improvement on a busy or
+lossy link, and it is free here in a way it is not on stock Arch.
+
+The switch writes two files, because they solve two problems: `sysctl.d` holds
+the setting, and `modules-load.d` makes sure the algorithm is actually loaded by
+the time sysctl runs. Without the second one the line is applied at boot to a
+setting that does not exist yet, and fails silently.
+
+### The kernel and the scheduler
+
+Nyx Linux installs `linux-cachyos`, which is the **EEVDF + LTO + AutoFDO +
+Propeller** build. That is the one to want, and it is worth being precise about
+why: the performance work in CachyOS is mostly in the *compilation* — LTO,
+AutoFDO and Propeller — not in the scheduler.
+
+The scheduler is compiled into the kernel, not a module. There is no `modprobe`
+and no boot parameter for it; choosing BORE means installing a different kernel
+package, and that package is `linux-cachyos-bore`, which drops the LTO, AutoFDO
+and Propeller build to get it. You would be trading general throughput for
+latency in some games, plus 166 MB and a reboot. That is a trade-off rather than
+an improvement, so it is not offered as a menu entry.
+
+What is offered instead is BBR, which is free, and keeping the kernel that is
+actually the fastest one.
 
 `set` and `apply` are separate on purpose: you can line up several changes and
 write them in one go. The five kernel parameters need a reboot, and `nyx-tweaks`

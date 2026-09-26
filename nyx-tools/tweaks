@@ -57,7 +57,19 @@ require_boot_params() {
 #   kparam    a kernel command line parameter, needs a reboot
 #   service   enable or disable a systemd unit
 #   ppd       the power-profiles-daemon profile
+#   sysctl    a net.ipv4 setting, written to sysctl.d and applied at once
 # ---------------------------------------------------------------------------
+
+# The network congestion control is worth a switch of its own because it is the
+# one performance setting on this distribution that costs nothing at all: BBR is
+# already built into the CachyOS kernel we install, as a module, so turning it on
+# is a sysctl and no package, no disk and no reboot.
+#
+# The scheduler is deliberately NOT here. It is compiled into the kernel, so
+# choosing BORE means installing a different kernel package, and that one gives
+# up the LTO, AutoFDO and Propeller build that makes linux-cachyos worth having.
+# That is a trade-off, not an improvement, and it belongs in a README rather than
+# in a menu that looks like a free choice.
 
 cpu_vendor() {
     awk -F: '/vendor_id/{gsub(/[ \t]/,"",$2); print tolower($2); exit}' /proc/cpuinfo 2>/dev/null
@@ -101,6 +113,7 @@ TWEAKS=(
 "pstate|kparam|active passive guided off|active|yes|Frequency scaling driver"
 "power-profile|ppd|balanced power-saver performance|balanced|no|Desktop power profile"
 "ananicy|service|on off|on|no|Automatic process priorities"
+"congestion|sysctl|cubic bbr bbr3|cubic|no|Network congestion control"
 )
 
 tweak_field() { printf '%s\n' "${TWEAKS[@]}" | awk -F'|' -v k="$1" -v n="$2" '$1==k{print $n}'; }
@@ -246,6 +259,48 @@ write_state() {
     rm -f "$tmp"
 }
 
+# Two files, because they solve two different problems. sysctl.d is the setting,
+# and it only works if the algorithm is actually available by the time sysctl
+# runs. bbr ships as a module, so without the modules-load entry the sysctl line
+# is applied at boot to a setting that does not exist yet and fails silently.
+# systemd-modules-load runs before systemd-sysctl, so this pair is enough.
+write_sysctl() {
+    local value="$1" tmp
+    tmp="$(mktemp)"
+    {
+        printf '# Nyx: network congestion control, written by nyx-tweaks.\n'
+        printf '# bbr and bbr3 are built into the CachyOS kernel as modules.\n'
+        printf 'net.ipv4.tcp_congestion_control = %s\n' "$value"
+    } >"$tmp"
+    install -Dm0644 "$tmp" /etc/sysctl.d/90-nyx-congestion.conf
+    rm -f "$tmp"
+
+    case "$value" in
+        bbr|bbr3)  mod="tcp_${value}" ;;
+        *)        mod="" ;;
+    esac
+
+    if [[ -n "$mod" ]]; then
+        tmp="$(mktemp)"
+        printf '%s\n' "$mod" >"$tmp"
+        install -Dm0644 "$tmp" /etc/modules-load.d/nyx-congestion.conf
+        rm -f "$tmp"
+        # Load it now rather than after the next reboot, and keep the value.
+        modprobe "$mod" >/dev/null 2>&1 || \
+            warn "could not load the $mod module; it will be tried again at boot"
+    else
+        rm -f /etc/modules-load.d/nyx-congestion.conf
+    fi
+
+    if sysctl -w "net.ipv4.tcp_congestion_control=$value" >/dev/null 2>&1; then
+        ok "congestion control: $value"
+    else
+        local have
+        have="$(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null || true)"
+        warn "the kernel refused '$value'. Available: ${have:-unknown}"
+    fi
+}
+
 # --- bootloader regeneration ----------------------------------------------
 
 # Only the pieces that carry a kernel command line are touched, and each is
@@ -377,6 +432,8 @@ apply_all() {
     else
         dim "power-profiles-daemon is not installed, so the profile is not applied"
     fi
+
+    write_sysctl "$(get_value congestion)"
 
     regenerate_bootloader
     write_state
@@ -559,6 +616,9 @@ tweak_note() {
         pstate:off)       printf 'the driver will refuse to load' ;;
         zram:half)        printf 'a quarter of RAM, rounded, capped at 4G' ;;
         ananicy:on)       printf 'desktop programs are already well behaved' ;;
+        congestion:bbr)   printf 'noticeably better throughput on a busy link' ;;
+        congestion:bbr3)  printf 'the newer of the two, slightly less proven' ;;
+        congestion:cubic) printf 'the kernel default' ;;
         *)                printf '' ;;
     esac
 }

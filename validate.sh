@@ -929,12 +929,33 @@ else
 fi
 if [[ -f "$TW" ]]; then
     tw="$(code_only "$TW")"
-    # Ten switches is the promise the README makes; count the registry rows.
-    n=$(grep -cE '^"[a-z-]+\|(cpupower|zram|kparam|service|ppd)\|' "$TW" || true)
-    if [[ "$n" == 10 ]]; then
-        ok "nyx-tweaks registers exactly 10 switches"
+    # The count is a promise the README makes, so keep them in step.
+    n=$(grep -cE '^"[a-z-]+\|(cpupower|zram|kparam|service|ppd|sysctl)\|' "$TW" || true)
+    if [[ "$n" == 11 ]]; then
+        ok "nyx-tweaks registers exactly 11 switches"
     else
-        bad "nyx-tweaks registers $n switches, expected 10"
+        bad "nyx-tweaks registers $n switches, expected 11"
+    fi
+    # A sysctl that names an algorithm the kernel only has as a module is
+    # applied to a setting that does not exist yet and fails silently at boot.
+    # The modules-load entry is what makes it work, so the two belong together.
+    if func_body write_sysctl "$TW" | grep -q 'sysctl.d'; then
+        ok "the sysctl switch writes a sysctl.d file"
+    else
+        bad "the sysctl switch writes no sysctl.d file"
+    fi
+    if func_body write_sysctl "$TW" | grep -q 'modules-load.d'; then
+        ok "the sysctl switch also loads the module, so the setting survives a reboot"
+    else
+        bad "the sysctl switch names no module; the value would be lost at boot"
+    fi
+    # Turning it back to the default has to remove the module entry. Leaving a
+    # stale one is harmless, but leaving a stale sysctl line is not: it would
+    # reassert the old algorithm on every boot.
+    if func_body write_sysctl "$TW" | grep -qE 'rm -f /etc/modules-load'; then
+        ok "choosing the default algorithm removes the module entry"
+    else
+        bad "the sysctl switch never removes its modules-load entry"
     fi
     if grep -q 'need_root "set ' <<<"$tw" && grep -q 'write_state' <<<"$tw"; then
         ok "nyx-tweaks records a change instead of only printing it"
@@ -1069,6 +1090,57 @@ if grep -q 'nyx-greeting.sh' build.sh; then
     ok "build.sh installs the login greeting hook"
 else
     bad "build.sh does not install the login greeting hook"
+fi
+
+# --- nyx-update ------------------------------------------------------------
+NU=nyx-tools/nyx-update
+if [[ -f "$NU" ]] && is_shell_script "$NU"; then
+    ok "nyx-update present"
+else
+    bad "nyx-update missing or not a shell script"
+fi
+if [[ -f "$NU" ]]; then
+    nu="$(code_only "$NU")"
+    # The reason this exists: the news has to be read before the update, not
+    # after something has already broken.
+    if grep -q 'archlinux.org/feeds/news' <<<"$nu"; then
+        ok "nyx-update reads the Arch news feed"
+    else
+        bad "nyx-update does not read the Arch news feed"
+    fi
+    if grep -q 'do_news' <<<"$nu" && grep -q 'show_news' <<<"$nu"; then
+        ok "the news is a separate step that can be skipped on purpose"
+    else
+        bad "nyx-update has no separate news step"
+    fi
+    # It must not take the decision away: no -y, no --noconfirm anywhere.
+    if grep -qE 'pacman +-(-[a-zA-Z]*y|--noconfirm|--yes)' <<<"$nu"; then
+        bad "nyx-update passes a non-interactive flag to pacman; that is the user's call"
+    else
+        ok "nyx-update leaves every pacman prompt to the user"
+    fi
+    if grep -q 'nyx-rollback create' <<<"$nu"; then
+        ok "nyx-update delegates the snapshot to nyx-rollback"
+    else
+        bad "nyx-update takes no snapshot, so the update is not reversible"
+    fi
+    # A running kernel cannot change under a live system, so an update that
+    # installed a new one is not finished until you restart.
+    if grep -q 'kernel_pending' <<<"$nu"; then
+        ok "nyx-update reports when a newer kernel is waiting for a restart"
+    else
+        bad "nyx-update does not mention the pending restart"
+    fi
+    if grep -q 'EUID' <<<"$nu"; then
+        ok "nyx-update refuses to run without root"
+    else
+        bad "nyx-update does not check for root"
+    fi
+fi
+if grep -q 'srcdir/nyx-update' nyx-tools/PKGBUILD; then
+    ok "nyx-tools ships nyx-update"
+else
+    bad "nyx-tools does not install nyx-update"
 fi
 
 # --------------------------------------------------------------------------

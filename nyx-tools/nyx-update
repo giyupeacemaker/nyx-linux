@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# nyx-update - the update you can come back from.
+#
+# Arch breaks in one specific way: a partial upgrade. Holding pacman back on a
+# library while everything else moves is how a system that was fine yesterday
+# starts failing today, and the reason Arch publishes upgrade news at all. The
+# news is right there and most people never read it.
+#
+# So this does four things, in order, and stops at the first one that needs a
+# decision:
+#
+#   1. shows the Arch news published since you last updated
+#   2. takes a snapshot, if a backend is configured
+#   3. runs the update
+#   4. tells you exactly how to get back if it does not boot
+#
+# It does not decide anything for you. It does not update on its own, it does not
+# answer prompts for you, and it does not remove anything. If you would rather
+# read the news first, --news stops after step one and updates nothing.
+set -Eeuo pipefail
+
+readonly STATE_DIR=/var/lib/nyx
+readonly LOG=/var/log/nyx-update.log
+
+c_reset=''; c_dim=''; c_ok=''; c_warn=''; c_bad=''; c_head=''
+if [[ -t 1 ]]; then
+    c_reset=$'\033[0m'; c_dim=$'\033[2m'; c_ok=$'\033[38;5;114m'
+    c_warn=$'\033[38;5;215m'; c_bad=$'\033[38;5;203m'; c_head=$'\033[1;38;5;39m'
+fi
+head_() { printf '%s%s%s\n' "$c_head" "$*" "$c_reset"; }
+ok()   { printf '  %s✓%s %s\n' "$c_ok" "$c_reset" "$*"; }
+warn() { printf '  %s!%s %s\n' "$c_warn" "$c_reset" "$*"; }
+err()  { printf '%s✗%s %s\n' "$c_bad" "$c_reset" "$*" >&2; }
+dim()  { printf '%s%s%s\n' "$c_dim" "$*" "$c_reset"; }
+die()  { err "$*"; exit 1; }
+
+usage() {
+    cat <<'EOF'
+Nyx update — news, a snapshot, then the update
+
+  sudo nyx-update           the whole sequence
+  nyx-update --news         only the news since you last updated
+  nyx-update --check        what is waiting, install nothing
+  nyx-update --skip-news    update without reading the news first
+  nyx-update --no-snapshot  update without taking a snapshot
+
+Nothing is installed unless you run it without a limiting option, and even then
+pacman asks you about every package it is about to touch. The snapshot is taken
+before anything is removed, so an update that breaks the machine is reversible:
+
+  nyx-rollback list
+  nyx-rollback revert <number>
+EOF
+}
+
+# --- news ------------------------------------------------------------------
+
+# The RSS feed Arch has published for years. Filtered locally rather than by
+# remembering a timestamp of our own, because the feed carries dates and ours
+# would drift from the clock.
+news_since() {
+    local since="$1"
+    if [[ -n "$since" ]]; then
+        curl -fsSL --max-time 15 https://archlinux.org/feeds/news/ 2>/dev/null \
+            | python3 -c '
+import sys, re, email.utils
+since = sys.argv[1]
+raw = sys.stdin.read()
+items = re.findall(r"<item>(.*?)</item>", raw, re.S)
+out = []
+for it in items:
+    t = re.search(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", it, re.S)
+    d = re.search(r"<pubDate>(.*?)</pubDate>", it, re.S)
+    l = re.search(r"<link>(.*?)</link>", it, re.S)
+    if not t:
+        continue
+    title = " ".join(t.group(1).split())
+    date = d.group(1).strip() if d else ""
+    if since:
+        try:
+            when = email.utils.parsedate_to_datetime(date)
+            if when.timestamp() < float(since):
+                continue
+        except Exception:
+            pass
+    out.append((date[:16], title, l.group(1).strip() if l else ""))
+for date, title, link in out[:6]:
+    print(f"  {date}  {title}")
+    if link:
+        print(f"      {link}")
+print(f"__COUNT__={len(out)}")
+' "$since" 2>/dev/null
+    else
+        curl -fsSL --max-time 15 https://archlinux.org/feeds/news/ 2>/dev/null \
+            | python3 -c '
+import sys, re
+raw = sys.stdin.read()
+items = re.findall(r"<item>(.*?)</item>", raw, re.S)
+out = []
+for it in items:
+    t = re.search(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", it, re.S)
+    d = re.search(r"<pubDate>(.*?)</pubDate>", it, re.S)
+    l = re.search(r"<link>(.*?)</link>", it, re.S)
+    if not t:
+        continue
+    out.append(((d.group(1).strip()[:16] if d else ""),
+                " ".join(t.group(1).split()),
+                l.group(1).strip() if l else ""))
+for date, title, link in out[:6]:
+    print(f"  {date}  {title}")
+    if link:
+        print(f"      {link}")
+print(f"__COUNT__={len(out)}")
+' 2>/dev/null
+    fi
+}
+
+last_update_epoch() {
+    # The mtime of the last successful pacman transaction, which is more honest
+    # than a file we maintain ourselves and forget to update.
+    local f
+    for f in /var/lib/pacman/local/*/mtree; do
+        [[ -e "$f" ]] && stat -c %Y "$f" 2>/dev/null
+    done | sort -rn | head -1
+}
+
+show_news() {
+    local since n
+    since="$(last_update_epoch)"
+    printf '\n'
+    head_ "  Arch news since you last updated"
+    local out; out="$(news_since "$since")"
+    n="$(printf '%s' "$out" | sed -n 's/^__COUNT__=//p')"
+    local body; body="$(printf '%s' "$out" | sed '/^__COUNT__=/d')"
+    if [[ -z "$n" || "$n" == 0 ]]; then
+        dim "  nothing published in that time."
+    else
+        printf '%s\n' "$body"
+        if [[ "$n" -gt 6 ]]; then
+            printf '\n'
+            dim "  and $(( n - 6 )) more: https://archlinux.org/news/"
+        fi
+    fi
+    printf '\n'
+}
+
+# --- snapshot --------------------------------------------------------------
+
+# Delegated to nyx-rollback rather than reimplemented: one tool that knows about
+# btrfs, ext4, snapper and timeshift is better than two that each know a little.
+snapshot_now() {
+    if ! command -v nyx-rollback >/dev/null 2>&1; then
+        warn "nyx-rollback is not installed, so no snapshot was taken"
+        return 1
+    fi
+    printf '\n'
+    if nyx-rollback create >/dev/null 2>&1; then
+        ok "snapshot taken before anything was removed"
+        return 0
+    fi
+    warn "nyx-rollback could not take a snapshot; continuing is your call"
+    return 1
+}
+
+# --- kernel reminder -------------------------------------------------------
+
+# Arch's own guidance, and the reason this exists: a running kernel cannot
+# change under a live system, so the update is not complete until you restart.
+kernel_pending() {
+    local running newest f
+    running="$(uname -r)"
+    newest=""
+    for f in /boot/vmlinuz-linux-*; do
+        [[ -e "$f" ]] || continue
+        local v="${f##*/vmlinuz-}"; v="${v%.img}"
+        [[ -n "$v" && "$v" != "$running" ]] && { newest="$v"; break; }
+    done
+    [[ -n "$newest" ]] || return 1
+    printf '  %s\n' "$newest"
+}
+
+# --- main ------------------------------------------------------------------
+
+main() {
+    local do_news=1 do_snap=1
+    case "${1:-}" in
+        --news)         do_snap=0 ;;
+        --check)
+            command -v nyx-updates >/dev/null 2>&1 \
+                && exec nyx-updates --list
+            die "nyx-updates is not installed"
+            ;;
+        --skip-news)    do_news=0 ;;
+        --no-snapshot)  do_snap=0 ;;
+        -h|--help|help) usage; exit 0 ;;
+        "")             ;;
+        *)              err "unknown option: $1"; usage; exit 1 ;;
+    esac
+
+    if (( EUID != 0 )); then
+        printf '\n'
+        warn "it updates the system, so it needs root: sudo nyx-update"
+        printf '\n'
+        exit 1
+    fi
+
+    install -d -m 0755 "$STATE_DIR"
+    local started; started="$(date '+%Y-%m-%d %H:%M:%S')"
+
+    (( do_news )) && show_news
+
+    if [[ "${1:-}" == "--news" ]]; then
+        printf '\n'
+        dim "  nothing was changed. run 'sudo nyx-update' when you have read that."
+        printf '\n'
+        exit 0
+    fi
+
+    (( do_snap )) && snapshot_now
+
+    printf '\n'
+    head_ "  Updating"
+    printf '\n'
+    # No -y, no --noconfirm. Every package pacman is about to touch gets asked
+    # about, and a removal gets spelled out. That is the whole point.
+    if ! pacman -Syu; then
+        err "the update did not finish. Nothing further was attempted."
+        printf '\n'
+        dim "  if it stopped on a keyring or a full /boot, fix that and run it again;"
+        dim "  the snapshot from before is still there."
+        printf '\n'
+        exit 1
+    fi
+
+    printf '\n'
+    ok "update finished"
+
+    local pending
+    if pending="$(kernel_pending)"; then
+        printf '\n'
+        head_ "  Restart to finish"
+        printf '  %sa newer kernel is installed: %s%s\n' \
+            "$c_warn" "$pending" "$c_reset"
+        dim "  the one you are running stays in use until you do."
+        dim "  kernel:  sudo reboot"
+    else
+        dim "  the running kernel is the one that was just installed."
+    fi
+
+    if command -v nyx-rollback >/dev/null 2>&1 && (( do_snap )); then
+        printf '\n'
+        dim "  if it does not come back up:  nyx-rollback list"
+        dim "  then:                          nyx-rollback revert <number>"
+    fi
+
+    {
+        printf '%s  nyx-update finished\n' "$started"
+    } >>"$LOG" 2>/dev/null || true
+    printf '\n'
+}
+
+main "$@"
