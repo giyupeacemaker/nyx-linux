@@ -33,6 +33,18 @@ is_shell_script() {
     [[ -f "$1" ]] || return 1
     head -n 1 "$1" 2>/dev/null | grep -qE '^#!.*\b(bash|sh|ksh|dash|zsh)\b'
 }
+
+# Some checks ask "does this file *do* X", and the answer has to ignore prose:
+# an explanatory comment naming a command, a path or a package would otherwise
+# satisfy the check on its own. Strip comments before grepping for code.
+#
+# Callers capture this with $(...) rather than piping it into "grep -q": grep -q
+# exits on the first match, the sed at the other end of the pipe dies of SIGPIPE,
+# and under `set -o pipefail` the whole pipeline then reports failure even though
+# the pattern did match.
+code_only() {
+    sed 's/^[[:space:]]*#.*$//; s/[[:space:]]#.*$//' "$1"
+}
 mapfile -t scripts < <(
     printf '%s\n' build.sh validate.sh vm-install-arch.sh
     find config/base-rootfs-overlay -type f 2>/dev/null
@@ -576,10 +588,10 @@ fi
 # --------------------------------------------------------------------------
 sect "Desktop background and update reporter"
 for f in config/nyx-wallpaper.jpg config/wallpaper-metadata.json \
-         config/base-rootfs-overlay/usr/local/bin/nyx-apply-wallpaper \
-         config/base-rootfs-overlay/usr/local/sbin/nyx-updates \
-         config/base-rootfs-overlay/usr/lib/systemd/user/nyx-updates.service \
-         config/base-rootfs-overlay/usr/lib/systemd/user/nyx-updates.timer; do
+         nyx-tools/wallpaper \
+         nyx-tools/updates \
+         nyx-tools/updates.service \
+         nyx-tools/updates.timer; do
     if [[ -f "$f" ]]; then ok "$(basename "$f") present"; else bad "$f missing"; fi
 done
 # The Limine boot background and the desktop background are separate files on
@@ -608,17 +620,17 @@ if grep -qE '^[[:space:]]*-[[:space:]]*pacman-contrib[[:space:]]*$' config/calam
 else
     bad "pacman-contrib is missing; checkupdates will not exist"
 fi
-if bash -n config/base-rootfs-overlay/usr/local/sbin/nyx-updates 2>/dev/null; then
+if bash -n nyx-tools/updates 2>/dev/null; then
     ok "nyx-updates passes a bash syntax check"
 else
     bad "nyx-updates has a syntax error"
 fi
-if grep -q 'checkupdates' config/base-rootfs-overlay/usr/local/sbin/nyx-updates; then
+if grep -q 'checkupdates' nyx-tools/updates; then
     ok "nyx-updates uses checkupdates rather than pacman -Sy"
 else
     bad "nyx-updates does not use checkupdates"
 fi
-if grep -q '12h' config/base-rootfs-overlay/usr/lib/systemd/user/nyx-updates.timer; then
+if grep -q '12h' nyx-tools/updates.timer; then
     ok "update timer runs every 12h"
 else
     bad "update timer interval is not 12h"
@@ -691,21 +703,21 @@ fi
 sect "Snapshot rollback"
 # nyx-rollback promises a way back after a bad transaction. Both backends it can
 # use have to be present in the target system, or the promise is empty.
-if [[ -f config/base-rootfs-overlay/usr/local/sbin/nyx-rollback ]]; then
+if [[ -f nyx-tools/rollback ]]; then
     ok "nyx-rollback present"
-    if bash -n config/base-rootfs-overlay/usr/local/sbin/nyx-rollback 2>/dev/null; then
+    if bash -n nyx-tools/rollback 2>/dev/null; then
         ok "nyx-rollback passes a bash syntax check"
     else
         bad "nyx-rollback has a syntax error"
     fi
     for be in snapper timeshift; do
-        if grep -q "$be" config/base-rootfs-overlay/usr/local/sbin/nyx-rollback; then
+        if grep -q "$be" nyx-tools/rollback; then
             ok "nyx-rollback knows the $be backend"
         else
             bad "nyx-rollback has no $be backend"
         fi
     done
-    if grep -q 'btrfs' config/base-rootfs-overlay/usr/local/sbin/nyx-rollback; then
+    if grep -q 'btrfs' nyx-tools/rollback; then
         ok "nyx-rollback picks a backend from the root filesystem"
     else
         bad "nyx-rollback does not detect the root filesystem type"
@@ -713,7 +725,7 @@ if [[ -f config/base-rootfs-overlay/usr/local/sbin/nyx-rollback ]]; then
     # Anchor on command position: the script may *print* "sudo pacman -S
     # snapper" as installation advice, which is not the same as running it.
     if grep -qE '(^|[;&|]|&&)[[:space:]]*(sudo[[:space:]]+)?pacman[[:space:]]+-S' \
-        config/base-rootfs-overlay/usr/local/sbin/nyx-rollback; then
+        nyx-tools/rollback; then
         bad "nyx-rollback runs a package transaction; it must only report and restore"
     else
         ok "nyx-rollback never installs packages on its own"
@@ -736,6 +748,93 @@ if grep -q '\bbtrfs\b' config/calamares/modules/partition.conf; then
     ok "installer offers btrfs, which nyx-rollback prefers"
 else
     warn "installer does not offer btrfs; only the timeshift path will work"
+fi
+
+# --------------------------------------------------------------------------
+sect "nyx-tools packaging"
+# The helper tools are a real package, not loose files in the base rootfs, so
+# that pacman owns them and an installed system can upgrade them. Keeping them in
+# two places means two sources of truth, and the stale copy is what gets shipped.
+pkg=nyx-tools
+if [[ -f "$pkg/PKGBUILD" ]]; then
+    ok "$pkg/PKGBUILD present"
+    # The version has to grow per build, or pacman reports no update at all.
+    if grep -q '^pkgver()' "$pkg/PKGBUILD"; then
+        ok "$pkg computes its version with pkgver()"
+    else
+        bad "$pkg has a fixed pkgver; a rebuilt package would never look newer"
+    fi
+    for f in updates rollback wallpaper updates.service updates.timer \
+             wallpaper.desktop README; do
+        if [[ -f "$pkg/$f" ]]; then ok "source $f present"; else bad "source $f missing"; fi
+    done
+else
+    bad "$pkg/PKGBUILD missing"
+fi
+
+for t in nyx-updates nyx-rollback nyx-apply-wallpaper; do
+    if find config/base-rootfs-overlay -name "$t" 2>/dev/null | grep -q .; then
+        bad "$t is still in base-rootfs-overlay; the package is now the only source"
+    else
+        ok "$t is not in the overlay"
+    fi
+    if grep -rq "$t" "$pkg" 2>/dev/null; then
+        ok "$t is shipped by $pkg"
+    else
+        bad "$t is not shipped by $pkg"
+    fi
+done
+
+# nyx-update-git must NOT be inside the package: it repairs the package, so it
+# has to survive the package being the thing that is broken.
+pkg_code="$(code_only "$pkg/PKGBUILD")"
+if grep -q 'nyx-update-git' <<<"$pkg_code"; then
+    bad "nyx-update-git is inside $pkg; it would die with the package it repairs"
+else
+    ok "nyx-update-git is deliberately outside $pkg"
+fi
+if [[ -f config/base-rootfs-overlay/usr/local/sbin/nyx-update-git ]]; then
+    ok "nyx-update-git ships with the ISO"
+else
+    bad "nyx-update-git is missing from the ISO"
+fi
+build_code="$(code_only build.sh)"
+if grep -q 'nyx-update-git' <<<"$build_code"; then
+    ok "build.sh installs nyx-update-git into the target"
+else
+    bad "build.sh does not install nyx-update-git"
+fi
+if grep -q 'systemctl --root' <<<"$build_code"; then
+    bad "build.sh still enables the timer with systemctl --root; the unit comes from the package"
+else
+    ok "timer is enabled with a direct symlink, not systemctl --root"
+fi
+
+if grep -q '^\[nyx\]' config/live-pacman.conf; then
+    ok "pacman.conf declares the [nyx] repository"
+else
+    bad "pacman.conf has no [nyx] repository"
+fi
+if grep -q 'file:///var/cache/nyx-repo' config/live-pacman.conf; then
+    ok "the installed system reads Nyx packages from /var/cache/nyx-repo"
+else
+    bad "the [nyx] repository does not point at /var/cache/nyx-repo"
+fi
+if grep -qE '^[[:space:]]*-[[:space:]]*nyx-tools[[:space:]]*$' config/calamares/modules/packages.conf; then
+    ok "nyx-tools is installed by the installer"
+else
+    bad "nyx-tools is not in the installer's package list"
+fi
+if grep -q 'nyx-tools' build.sh && grep -q 'var/cache/nyx-repo' build.sh; then
+    ok "build.sh builds the package and seeds the target repository"
+else
+    bad "build.sh does not build nyx-tools into the target repository"
+fi
+# repo-add refuses a database name that lacks a full archive extension.
+if grep -qE 'repo-add[^|]*nyx\.db([^.]|$)' build.sh; then
+    bad "repo-add is called with a bare nyx.db; it needs the full archive extension"
+else
+    ok "repo-add is given a full database archive name"
 fi
 
 # --------------------------------------------------------------------------

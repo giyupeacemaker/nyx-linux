@@ -1,0 +1,48 @@
+Nyx Linux tools
+
+  nyx-updates     what is available to install. Installs nothing.
+  nyx-rollback    filesystem snapshots, and a way back after a bad update.
+  nyx-update-git  fetch and rebuild these tools from the GitHub repository.
+
+About nyx-update-git
+
+  It ships with the ISO rather than from this package, on purpose: if this
+  package is the thing that is broken, the tool that fixes it still has to
+  exist. Nothing overwrites it.
+
+  It also only *builds*. Deciding whether to update is yours:
+
+      sudo nyx-update-git
+      sudo pacman -S nyx-tools
+
+  What it does behind the scenes: clones or fast-forwards
+  /usr/local/src/nyx-linux, writes VERSION as <release>.<commit count> so the
+  package version always grows, builds with makepkg, and appends the result to
+  the local repository at /var/cache/nyx-repo with a single signature database
+  shared with the package that shipped in the ISO.
+
+  After that the new version shows up in nyx-updates next to everything else
+  waiting to be updated, and pacman -S nyx-tools installs it like any other
+  package: it owns the files, so uninstalling removes them cleanly and the next
+  -Syu sees the new version.
+
+Useful options
+
+  nyx-update-git --check    only report whether new commits exist
+  nyx-update-git --diff     list the commits not yet built
+  nyx-update-git --path     where the clone lives
+
+Files
+
+  /usr/local/sbin/nyx-updates
+  /usr/local/sbin/nyx-rollback
+  /usr/local/bin/nyx-apply-wallpaper
+  /usr/lib/systemd/user/nyx-updates.service
+  /usr/lib/systemd/user/nyx-updates.timer
+  /etc/skel/.config/autostart/nyx-wallpaper.desktop
+
+The timer is enabled for every desktop session already, via
+/etc/systemd/user/timers.target.wants/nyx-updates.timer. If you ever disable
+it, bring it back with:
+
+  systemctl --user enable --now nyx-updates.timer

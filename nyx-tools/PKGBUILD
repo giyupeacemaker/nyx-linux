@@ -1,0 +1,60 @@
+# Maintainer: Nyx Linux
+# The Nyx specific tooling, shipped as a real package rather than as loose
+# files in the base rootfs, so that pacman owns them and so that an installed
+# system can update them from the GitHub repository.
+
+pkgname=nyx-tools
+# Replaced by pkgver() below. The literal is only the fallback for a checkout
+# with no VERSION file, i.e. a tarball rather than a git clone.
+pkgver=2026.09.01
+pkgrel=1
+pkgdesc='Nyx Linux helper tools: update reporter, snapshot rollback, first-run setup'
+arch=('x86_64')
+license=('GPL-3.0-or-later')
+
+# The version has to grow on every rebuild, otherwise pacman sees the same
+# version and reports no update. nyx-update-git writes VERSION as
+# <release>.<commit count> into the clone before building, so each build from
+# the repository is strictly newer than the one before it.
+pkgver() {
+    if [[ -r "$srcdir/VERSION" ]]; then
+        cat "$srcdir/VERSION"
+    else
+        echo 2026.09.01
+    fi
+}
+
+depends=(
+  bash
+  coreutils
+  pacman-contrib
+  systemd
+)
+# Both backends are optional and one of the two is always needed, depending on
+# the root filesystem. Note the += : a second plain assignment would replace the
+# first array instead of extending it, and snapper would silently vanish.
+optdepends=('snapper: instant snapshots on btrfs')
+optdepends+=('timeshift: snapshots on ext4 and other filesystems')
+
+source=('updates' 'rollback' 'wallpaper' 'README'
+        'updates.service' 'updates.timer' 'wallpaper.desktop')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm0755 "$srcdir/updates"   "$pkgdir/usr/local/sbin/nyx-updates"
+  install -Dm0755 "$srcdir/rollback"  "$pkgdir/usr/local/sbin/nyx-rollback"
+  install -Dm0755 "$srcdir/wallpaper" "$pkgdir/usr/local/bin/nyx-apply-wallpaper"
+
+  install -Dm0644 "$srcdir/updates.service" \
+    "$pkgdir/usr/lib/systemd/user/nyx-updates.service"
+  install -Dm0644 "$srcdir/updates.timer" \
+    "$pkgdir/usr/lib/systemd/user/nyx-updates.timer"
+
+  # The autostart entry has to live in the skeleton, so that it appears in the
+  # home of every user the installer creates.
+  install -Dm0644 "$srcdir/wallpaper.desktop" \
+    "$pkgdir/etc/skel/.config/autostart/nyx-wallpaper.desktop"
+
+  install -Dm0644 "$srcdir/README" \
+    "$pkgdir/usr/share/doc/nyx-tools/README"
+}

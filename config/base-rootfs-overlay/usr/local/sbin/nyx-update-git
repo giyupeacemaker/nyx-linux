@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# nyx-update-git - fetch and rebuild nyx-tools from the GitHub repository.
+#
+# Deliberately NOT part of the nyx-tools package: if that package is the thing
+# that is broken, the tool that fixes it has to still be there. It ships with
+# the ISO and nothing overwrites it.
+#
+# This only *builds*. It never installs, because deciding whether to update is
+# the user's call. After a successful build the new version sits in the local
+# repository, nyx-updates reports it alongside everything else, and installing
+# it is an ordinary:
+#
+#     sudo pacman -S nyx-tools
+set -Eeuo pipefail
+
+readonly REPO_URL=https://github.com/giyupeacemaker/nyx-linux.git
+readonly CLONE=/usr/local/src/nyx-linux
+readonly LOCAL_REPO=/var/cache/nyx-repo
+readonly RELEASE=2026.09.01
+readonly BRANCH=main
+
+c_reset=''; c_dim=''; c_ok=''; c_warn=''; c_bad=''; c_head=''
+if [[ -t 1 ]]; then
+    c_reset=$'\033[0m'; c_dim=$'\033[2m'; c_ok=$'\033[38;5;114m'
+    c_warn=$'\033[38;5;215m'; c_bad=$'\033[38;5;203m'; c_head=$'\033[1;38;5;39m'
+fi
+head_() { printf '%s%s%s\n' "$c_head" "$*" "$c_reset"; }
+ok()   { printf '  %s✓%s %s\n' "$c_ok" "$c_reset" "$*"; }
+warn() { printf '  %s!%s %s\n' "$c_warn" "$c_reset" "$*"; }
+err()  { printf '  %s✗%s %s\n' "$c_bad" "$c_reset" "$*" >&2; }
+
+usage() {
+    cat <<'EOF'
+Использование: nyx-update-git [опция]
+
+  (без опций)  забрать изменения, собрать nyx-tools, положить в локальный репозиторий
+  --check      только показать, есть ли что обновлять, ничего не собирать
+  --diff       показать коммиты, которых ещё нет в установленном пакете
+  --path       где лежит клон репозитория
+  -h, --help   эта справка
+
+Скрипт ничего не устанавливает. Установка — отдельное решение:
+
+    sudo nyx-update-git
+    sudo pacman -S nyx-tools
+EOF
+}
+
+need_root() { [[ ${EUID:-$(id -u)} -eq 0 ]] || { err "нужны права root: sudo nyx-update-git $*"; exit 1; }; }
+
+installed_version() {
+    pacman -Q nyx-tools 2>/dev/null | awk '{print $2}' || true
+}
+
+clone_or_pull() {
+    if [[ -d "$CLONE/.git" ]]; then
+        ok "репозиторий уже склонирован: $CLONE"
+        git -C "$CLONE" fetch --quiet origin "$BRANCH"
+        local before after
+        before=$(git -C "$CLONE" rev-parse HEAD)
+        git -C "$CLONE" merge --ff-only --quiet "origin/$BRANCH" 2>/dev/null \
+            || git -C "$CLONE" reset --hard --quiet "origin/$BRANCH"
+        after=$(git -C "$CLONE" rev-parse HEAD)
+        if [[ "$before" == "$after" ]]; then
+            warn "изменений в репозитории нет"
+            return 1
+        fi
+        ok "обновлён до $(git -C "$CLONE" rev-parse --short HEAD)"
+    else
+        install -d -m 0755 "$(dirname "$CLONE")"
+        git clone --quiet --depth 1 --branch "$BRANCH" "$REPO_URL" "$CLONE"
+        ok "склонирован $REPO_URL"
+    fi
+    return 0
+}
+
+commit_count() { git -C "$CLONE" rev-list --count HEAD 2>/dev/null || echo 0; }
+
+# The build runs inside the clone so that the PKGBUILD sees a git checkout and
+# the version it writes matches the commit it came from.
+build_package() {
+    local ncount nver
+    ncount=$(commit_count)
+    nver="$RELEASE.$ncount"
+    printf '%s\n' "$nver" >"$CLONE/nyx-tools/VERSION"
+    ok "версия пакета: $nver"
+
+    local out
+    if ! out=$(cd "$CLONE" && makepkg -C --noconfirm --nodeps nyx-tools 2>&1); then
+        err "сборка не удалась:"
+        printf '%s\n' "$out" | tail -15 | sed 's/^/      /'
+        return 1
+    fi
+    printf '%s\n' "$out" | grep -E 'Finished making|==> ' | tail -4 | sed 's/^/  /'
+
+    local pkg
+    pkg=$(ls -1t "$CLONE"/nyx-tools/nyx-tools-*.pkg.tar.zst 2>/dev/null | head -1) || true
+    [[ -n "$pkg" ]] || { err "пакет не собран"; return 1; }
+
+    install -d -m 0755 "$LOCAL_REPO"
+    # A single signature database, named for the repository, keeps the package
+    # from the ISO and every later build referencing each other.
+    install -m 0644 "$pkg" "$LOCAL_REPO/"
+    repo-add --quiet "$LOCAL_REPO/nyx.db.tar.zst" "$LOCAL_REPO"/*.pkg.tar.zst
+    ok "добавлено в $LOCAL_REPO: $(basename "$pkg")"
+}
+
+report() {
+    local inst new
+    inst="$(installed_version)"
+    new=$(ls -1t "$LOCAL_REPO"/nyx-tools-*.pkg.tar.zst 2>/dev/null | head -1)
+    new="${new##*-}"
+    new="${new%.pkg.tar.zst}"
+
+    printf '\n'
+    head_ "Дальше — твоё решение"
+    if [[ -z "$inst" ]]; then
+        printf '  nyx-tools не установлен. Поставить:\n'
+    elif [[ "$new" != "$inst" ]]; then
+        printf '  в репозитории %s, установлен %s.\n' "$new" "$inst"
+        printf '  обновить:\n'
+    else
+        printf '  установленная версия свежая.\n'
+        return 0
+    fi
+    printf '\n      %ssudo pacman -S nyx-tools%s\n' "$c_head" "$c_reset"
+    printf '      %sобновление покажется и в nyx-updates%s\n' "$c_dim" "$c_reset"
+}
+
+cmd="${1:-}"
+case "$cmd" in
+    -h|--help) usage; exit 0 ;;
+    --path)    echo "$CLONE"; exit 0 ;;
+esac
+need_root "${cmd:-build}"
+
+# These are the build prerequisites. base-devel is already in the target system,
+# but say so plainly rather than failing inside makepkg.
+for tool in git makepkg repo-add; do
+    command -v "$tool" >/dev/null 2>&1 || {
+        err "$tool не найден: sudo pacman -S --needed git base-devel"
+        exit 1
+    }
+done
+[[ -d "$LOCAL_REPO" ]] || install -d -m 0755 "$LOCAL_REPO"
+
+case "$cmd" in
+    --check)
+        if [[ ! -d "$CLONE/.git" ]]; then
+            echo "репозиторий ещё не склонирован: $CLONE"
+            exit 1
+        fi
+        remote=$(git -C "$CLONE" rev-parse "origin/$BRANCH" 2>/dev/null || echo "")
+        local_s=$(git -C "$CLONE" rev-parse HEAD 2>/dev/null || echo "")
+        if [[ -n "$remote" && "$remote" != "$local_s" ]]; then
+            ok "есть новые коммиты: $(git -C "$CLONE" rev-list --count "HEAD..origin/$BRANCH")"
+            git -C "$CLONE" log --oneline --no-decorate "HEAD..origin/$BRANCH" | sed 's/^/      /'
+        else
+            warn "локальная копия актуальна"
+        fi
+        exit 0
+        ;;
+    --diff)
+        [[ -d "$CLONE/.git" ]] || { err "репозиторий не склонирован"; exit 1; }
+        git -C "$CLONE" fetch --quiet origin "$BRANCH"
+        git -C "$CLONE" log --oneline --no-decorate "HEAD..origin/$BRANCH" | sed 's/^/  /'
+        exit 0
+        ;;
+    "")
+        clone_or_pull || { report; exit 0; }
+        build_package || exit 1
+        report
+        ;;
+    *)
+        err "неизвестная опция: $cmd"; usage; exit 1
+        ;;
+esac

@@ -105,6 +105,15 @@ Limine is refreshed automatically after a kernel update.
 
 ## Command line extras
 
+### `nyx-tools`
+
+The helper tools ship as one ordinary Arch package, so pacman owns them and a
+system update brings a new version along:
+
+- `nyx-updates` — what is available to install. Installs nothing
+- `nyx-rollback` — filesystem snapshots, and a way back after a bad update
+- `nyx-apply-wallpaper` — applies the default background on first login
+
 ### `nyx-updates`
 
 Reports what is available to install. It installs nothing.
@@ -116,14 +125,58 @@ nyx-updates --status # replay the last result, no network access
 nyx-updates --reset  # forget the baseline, so the next check reports everything
 ```
 
-Arch, CachyOS and AUR are counted separately, because they move on different
-schedules. When the kernel is among the updates it is called out on its own
-line together with the reboot it requires.
+Arch, CachyOS, AUR and Nyx's own `nyx-tools` are counted separately, because
+they move on different schedules. When the kernel is among the updates it is
+called out on its own line together with the reboot it requires.
 
 A background check runs shortly after you log in and every twelve hours after
 that, with a random delay so a lot of machines do not query the mirrors in
 lockstep. It uses a throwaway package database, so checking never leaves your
 system's own database out of step with what is installed.
+
+### Updating the tools themselves
+
+The installed system keeps its own Nyx repository at `/var/cache/nyx-repo`.
+`nyx-update-git` fetches this repository, builds `nyx-tools` from it and appends
+the result to that local repository. It **only builds**:
+
+```bash
+sudo nyx-update-git          # fetch and build
+sudo nyx-update-git --check  # only report whether new commits exist
+sudo nyx-update-git --diff   # list commits not yet built
+sudo pacman -S nyx-tools     # you decide whether to install
+```
+
+After the build the new version shows up in `nyx-updates` next to everything
+else, and installing it is an ordinary `pacman -S`. The version is
+`<release>.<commit count>`, so every build is strictly newer than the last.
+
+Deciding stays with you at every step: the checker only reports, and the
+builder only builds.
+
+### `nyx-rollback`
+
+Takes a snapshot of the root filesystem so a bad update is reversible.
+
+```bash
+nyx-rollback status     # what is configured, which backend, how many kernels
+nyx-rollback list       # snapshots
+nyx-rollback create     # take one now
+nyx-rollback revert 5   # roll back
+```
+
+The backend follows the root filesystem. On **btrfs** it uses `snapper`: the
+`/.snapshots` subvolume is created if missing, an hourly timeline is enabled,
+and a hook takes a snapshot before and after every `pacman` transaction. On
+**ext4**, the installer's default, there are no snapshots to take, so it uses
+`timeshift` with an only-if-changed tag and a daily one, so hours without
+changes cost no space.
+
+Kernels live on the EFI partition and are deliberately outside the snapshot, so
+a filesystem rollback always keeps the installed kernel. `status` lists the
+kernels present and says whether rolling one back is possible at all. It only
+reports and restores: it never installs a kernel, never edits a bootloader and
+never deletes anything without confirmation.
 
 ### `fastfetch`
 

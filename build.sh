@@ -182,8 +182,34 @@ mapfile -t calamares_packages < <(
 )
 (( ${#calamares_packages[@]} == 1 )) || die "Expected exactly one Calamares package, found ${#calamares_packages[@]}."
 cp "${calamares_packages[0]}" "$LOCAL_REPO/"
+
+# nyx-tools is a real package rather than loose files in the base rootfs, so
+# that pacman owns the files and so that an installed system can upgrade them
+# from the GitHub repository. It is built before the target rootfs is created,
+# because the target has to be seeded with it.
+log "Building nyx-tools"
+NYX_TOOLS_BUILD="$BUILD_ROOT/nyx-tools-build"
+rm -rf -- "$NYX_TOOLS_BUILD"
+install -d -m 0755 "$NYX_TOOLS_BUILD"
+cp -a "$SRC/nyx-tools/." "$NYX_TOOLS_BUILD/"
+# The version has to be a real one even for the ISO build, so that a later
+# rebuild from git produces something strictly newer.
+printf '%s.%s\n' "$RELEASE" "$(git -C "$SRC" rev-list --count HEAD 2>/dev/null || echo 0)" \
+    >"$NYX_TOOLS_BUILD/VERSION"
+chown -R iso-builder:iso-builder "$NYX_TOOLS_BUILD"
+runuser -u iso-builder -- env "MAKEFLAGS=-j${JOBS}" bash -c \
+    "cd '$NYX_TOOLS_BUILD' && makepkg --noconfirm --cleanbuild --nodeps"
+
+mapfile -t nyx_tools_packages < <(
+    find "$NYX_TOOLS_BUILD" -maxdepth 1 -type f \
+        -name 'nyx-tools-[0-9]*-x86_64.pkg.tar.zst' -print
+)
+(( ${#nyx_tools_packages[@]} == 1 )) \
+    || die "Expected exactly one nyx-tools package, found ${#nyx_tools_packages[@]}."
+cp "${nyx_tools_packages[0]}" "$LOCAL_REPO/"
+info "nyx-tools: $(basename "${nyx_tools_packages[0]}")"
+
 repo-add "$LOCAL_REPO/nyx-local.db.tar.zst" "$LOCAL_REPO"/*.pkg.tar.zst
-info "Local package: $(basename "${calamares_packages[0]}")"
 
 log "Creating the minimal target root filesystem"
 rm -rf -- "$BASE_ROOTFS" "$BASE_SQUASHFS"
@@ -196,14 +222,25 @@ install -Dm0644 "$SRC/config/live-pacman.conf" "$BASE_ROOTFS/etc/pacman.conf"
 install -Dm0644 "$SRC/config/locale.gen" "$BASE_ROOTFS/etc/locale.gen"
 cp -a "$SRC/config/base-rootfs-overlay/." "$BASE_ROOTFS/"
 # The overlay comes from a Windows working copy, so force sane permissions.
-for helper in update-arch-limine nyx-configure-bootloader update-nyx-os-release nyx-updates nyx-rollback; do
+# nyx-updates, nyx-rollback and nyx-apply-wallpaper are deliberately not in this
+# list: they belong to the nyx-tools package now, and having them in two places
+# would mean two sources of truth.
+for helper in update-arch-limine nyx-configure-bootloader update-nyx-os-release; do
     install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/$helper" \
         "$BASE_ROOTFS/usr/local/sbin/$helper"
 done
-install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/bin/nyx-apply-wallpaper" \
-    "$BASE_ROOTFS/usr/local/bin/nyx-apply-wallpaper"
-install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/nyx-rollback" \
-    "$BASE_ROOTFS/usr/local/sbin/nyx-rollback"
+install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/nyx-update-git" \
+    "$BASE_ROOTFS/usr/local/sbin/nyx-update-git"
+
+# The installed system's own Nyx repository starts out holding the package built
+# into the ISO. nyx-update-git appends newer builds to the same directory, which
+# is what makes nyx-updates report them alongside ordinary Arch updates.
+install -d -m 0755 "$BASE_ROOTFS/var/cache/nyx-repo"
+install -m 0644 "${nyx_tools_packages[0]}" "$BASE_ROOTFS/var/cache/nyx-repo/"
+# repo-add insists on a full archive extension. One database serves both the
+# package from the ISO and every later build that nyx-update-git appends.
+repo-add --quiet "$BASE_ROOTFS/var/cache/nyx-repo/nyx.db.tar.zst" \
+    "$BASE_ROOTFS/var/cache/nyx-repo"/*.pkg.tar.zst
 install -Dm0644 "$SRC/config/base-rootfs-overlay/etc/pacman.d/mirrorlist" \
     "$BASE_ROOTFS/etc/pacman.d/mirrorlist"
 install -Dm0644 "$SRC/config/base-rootfs-overlay/etc/pacman.d/hooks/99-arch-limine.hook" \
@@ -237,10 +274,13 @@ printf 'nyx\n' >"$BASE_ROOTFS/etc/hostname"
 chmod 0644 "$BASE_ROOTFS/etc/hostname"
 
 # Enable the update reporter for every desktop session. It is a *user* timer
-# because notify-send has to reach the running graphical session, and enabling
-# it globally avoids depending on anything running at install time.
-systemctl --root="$BASE_ROOTFS" --global enable nyx-updates.timer >/dev/null 2>&1 \
-    || die "failed to enable the nyx-updates user timer in the target rootfs."
+# because notify-send has to reach the running graphical session. The unit
+# itself arrives with the nyx-tools package, so the symlink is written directly
+# instead of through "systemctl --root --global enable", which would need the
+# unit to be installed already at build time.
+install -d -m 0755 "$BASE_ROOTFS/etc/systemd/user/timers.target.wants"
+ln -sfn /usr/lib/systemd/user/nyx-updates.timer \
+    "$BASE_ROOTFS/etc/systemd/user/timers.target.wants/nyx-updates.timer"
 
 # Calamares executes pacman in a chroot where systemd-resolved is not running.
 # Use temporary public resolvers during installation; the shell process restores
@@ -344,17 +384,26 @@ EOF
 install -m 0644 "$SRC/config/live-pacman.conf" "$PROFILE/pacman.conf"
 python - "$PROFILE/pacman.conf" "$LOCAL_REPO" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 config = Path(sys.argv[1])
 local_repo = Path(sys.argv[2]).resolve()
 text = config.read_text()
-text = text.replace("[core]", (
-    "[nyx-local]\n"
-    "SigLevel = Optional TrustAll\n"
-    f"Server = file://{local_repo}\n\n"
-    "[core]"
-), 1)
+
+# The live image must read the Nyx repository from the build-time directory,
+# while the installed system keeps /var/cache/nyx-repo. Both come from the same
+# source file, so only the Server line inside the [nyx] section is rewritten,
+# and only for the live profile.
+text, n = re.subn(
+    r"(\[nyx\][^\[]*?Server\s*=\s*)file://[^\s]*",
+    lambda m: m.group(1) + f"file://{local_repo}",
+    text,
+    count=1,
+    flags=re.S,
+)
+if n != 1:
+    print("WARNING: no [nyx] Server line was rewritten", file=sys.stderr)
 config.write_text(text)
 PY
 
@@ -520,11 +569,9 @@ for required in \
     'usr/bin/pacman' \
     'usr/local/sbin/update-arch-limine' \
     'usr/local/sbin/nyx-configure-bootloader' \
-    'usr/local/sbin/nyx-updates' \
-    'usr/local/sbin/nyx-rollback' \
-    'usr/local/bin/nyx-apply-wallpaper' \
-    'usr/lib/systemd/user/nyx-updates.service' \
-    'usr/lib/systemd/user/nyx-updates.timer' \
+    'usr/local/sbin/nyx-update-git' \
+    'var/cache/nyx-repo/nyx.db.tar.zst' \
+    'var/cache/nyx-repo/nyx-tools' \
     'etc/systemd/user/timers.target.wants/nyx-updates.timer' \
     'usr/share/backgrounds/nyx.jpg' \
     'usr/share/wallpapers/nyx/metadata.json' \
