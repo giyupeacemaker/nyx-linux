@@ -9,8 +9,8 @@ desktop, and it installs a working system to your disk.
 
 ## Project Info 
 The Nyx Linux is in pre-alpha stage now. bugs or arch linux naming may occur.
-Planning to switch from systemd to OpenRC! 
-but after switching to Stable/Released stage and releasing 1-3 Stable releases with systemd
+aaaand,Planning to switch from systemd to OpenRC! 
+but after switching to Stable/Released stage,and releasing 1-3 Stable releases with systemd.
 Nyx Linux firstly is ENTHUSIAST Project,that maintaining by 1 person,and AI agent(helped for doing repo)
 
 ## What it is
