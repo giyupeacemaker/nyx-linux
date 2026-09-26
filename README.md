@@ -26,7 +26,7 @@ desktop, and it installs a working system to your disk.
 | Secure Boot | must be disabled |
 | Architecture | x86_64 |
 | Free disk | 20 GB minimum |
-| RAM | 4 GB minimum |
+| RAM | 3 GB minimum |
 
 Legacy BIOS is not supported.
 
@@ -40,6 +40,7 @@ sha256sum -c nyx-linux-cachyos-calamares-2026.09.01-x86_64.iso.sha256
 ```
 
 Use a DD-mode writer (Rufus, balenaEtcher) so the image is written verbatim
+You can use Ventoy too.
 rather than reinterpreted.
 
 ## Installing
