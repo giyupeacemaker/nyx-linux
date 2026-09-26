@@ -1255,24 +1255,40 @@ else
 fi
 if [[ -f "$LOGO" ]]; then
     ok "the Nyx logo file is present"
-    # A logo made of block characters has to carry real ESC bytes, otherwise
-    # fastfetch prints a wall of escape sequences as text.
-    esc=$(grep -c $'\033' "$LOGO" 2>/dev/null || true)
-    if (( ${esc:-0} > 0 )); then
-        ok "the logo carries colour escapes ($esc lines)"
+    # A logo is monochrome or coloured and both are correct. What must never
+    # happen is colour *sequences* printed as literal text, which is what a
+    # stripped escape byte looks like.
+    if grep -qF '[38;2;' "$LOGO" || grep -qF '[0m' "$LOGO"; then
+        bad "the logo has colour sequences as literal text; the ESC bytes were lost"
     else
-        bad "the logo has no ESC bytes; the colours would appear as literal text"
+        ok "the logo has no colour sequences printed as text"
     fi
-    # The peace sign is drawn with lines, and the word has to be there too.
-    if grep -q '│' "$LOGO" && grep -q '╱' "$LOGO"; then
-        ok "the logo contains a vertical bar and diagonals, so the peace sign is drawn"
+    # What counts as "a logo" is a decision, not a fact: a drawn mark, braille
+    # artwork or rendered blocks all satisfy it. What must hold for any of them
+    # is that there is real content and that the colour sequences are real bytes
+    # rather than printed text. The previous check looked for the vertical bar
+    # and diagonals of the peace sign, so it failed on any other artwork.
+    plain="$(sed 's/\x1b\[[0-9;]*m//g' "$LOGO")"
+    ink=$(printf '%s' "$plain" | tr -d '[:space:]' | wc -c)
+    glyphs=$(printf '%s' "$plain" | fold -w1 | sort -u | grep -c '[^[:space:]]')
+    rows=$(printf '%s\n' "$plain" | grep -c .)
+    if (( ink > 200 )); then
+        ok "the logo carries real content ($ink non-space characters, $rows rows)"
     else
-        bad "the logo has no peace sign lines"
+        bad "the logo is nearly empty ($ink non-space characters)"
     fi
-    if [[ "$(sed 's/\x1b\[[0-9;]*m//g' "$LOGO" | tr -d ' ' | wc -c)" -gt 100 ]]; then
-        ok "the logo has real content"
+    # Block artwork legitimately uses a handful of glyphs; braille uses many.
+    # The drawn peace sign reached five, so the floor is four.
+    if (( glyphs >= 4 )); then
+        ok "the logo uses $glyphs distinct glyphs"
     else
-        bad "the logo is nearly empty"
+        bad "the logo uses only $glyphs distinct glyphs; it does not look like artwork"
+    fi
+    # Braille is U+2800..U+28FF. If it is present the terminal font has to cover
+    # it, or the picture turns into replacement characters. The image already
+    # installs DejaVu and Liberation, both of which do.
+    if printf '%s' "$plain" | grep -qP '[\x{2800}-\x{28ff}]' 2>/dev/null; then
+        ok "the logo uses braille; the image ships DejaVu and Liberation, which cover it"
     fi
 else
     bad "the Nyx logo file is missing"

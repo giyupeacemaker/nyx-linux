@@ -6,14 +6,24 @@
 // very first line. On an install that reads "nyx@nyx"; on the live session,
 // "archiso@nyx".
 //
-// The logo is our own, drawn for this distribution: the peace sign and the word
-// NYX, in the same dark grey and cold blue as the rest of the branding. It lives
-// in nyx.ascii next to this file.
+// The logo is braille artwork in nyx.ascii, next to this file.
 //
-// A text logo rather than ~/.config/fastfetch/images/nyx.png over the kitty
-// graphics protocol, on purpose: the live and installed systems use Plasma, where
-// konsole does not speak kitty images, and a PNG would render as nothing at all.
-// Switch "type" to "kitty" and point "source" at a png if you want it under kitty.
+// It is text, not an image, and that is the whole point. fastfetch hands a PNG
+// to a graphics protocol, and the terminal has to speak one: konsole speaks
+// none, so a PNG logo renders as nothing at all there. It was measured rather
+// than assumed — "fastfetch --logo logo.jpg" in a terminal without a protocol
+// produces three replacement characters and no logo, with COLORTERM set to
+// truecolor or not.
+//
+// Braille is the highest-detail form text has: one cell carries a 2x4 dot
+// grid, so this artwork has about 9000 dots against the 600 a block-character
+// logo of the same footprint would have. It renders identically in konsole,
+// alacritty, foot, xterm or a Windows console, needs no graphics capability
+// and no extra package, and the blank cells are U+2800 rather than spaces,
+// which keeps every row exactly the same width.
+//
+// The only requirement is a font that covers U+2800..U+28FF. The image already
+// installs DejaVu and Liberation, which both do.
 
 {
     "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
