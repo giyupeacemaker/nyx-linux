@@ -29,12 +29,12 @@ Nyx Linux firstly is ENTHUSIAST Project,that maintaining by 1 person,and AI agen
 | | |
 | --- | --- |
 | Boot mode | UEFI only, GPT partitioned |
-| Secure Boot | must be disabled |
+| Secure Boot | need to be disabled |
 | Architecture | x86_64 |
 | Free disk | 20 GB minimum |
-| RAM | 3 GB minimum |
+| RAM | 4 GB minimum |
 
-Legacy BIOS is not supported.
+Legacy BIOS is not supported,and will NEVER be.
 
 ## Getting the ISO
 
@@ -122,6 +122,8 @@ system update brings a new version along:
 - `nyx-tweaks` — eleven opinionated switches, and a menu to set them
 - `nyx-motd` — the login greeting
 - `nyx-apply-wallpaper` — applies the default background on first login
+## Biggest Plans
+- `linux-nyx` — (SOON as possible) best stable and perf kernel,that will be used with nyx ecosystem
 
 ### `nyx-update`
 
