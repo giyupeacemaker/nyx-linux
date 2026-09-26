@@ -1,6 +1,6 @@
 # Nyx Linux
 
-Nyx Linux — Arch-based live ISO с Calamares: **Comfy · Gaming · Bloatless**.
+Nyx Linux — Arch-based live ISO с Calamares.
 
 Репозиторий: <https://github.com/giyupeacemaker/nyx-linux>
 

@@ -1,20 +1,62 @@
 # Nyx Linux
 
-**Comfy · Gaming · Bloatless**
+An Arch-based Linux distribution delivered as a bootable ISO with a graphical
+installer. The installer runs from the ISO itself: boot it, pick your
+desktop, and it installs a working system to your disk.
 
-An Arch-based live ISO with a Calamares graphical installer, built from source
-and packaged reproducibly.
+![UEFI only](https://img.shields.io/badge/boot-UEFI%20%2F%20GPT-blue)
+![Secure Boot](https://img.shields.io/badge/Secure%20Boot-not%20supported-orange)
 
-- Arch userland, `ID=arch`, official `core`/`extra` only
-- CachyOS repository appended **after** the Arch repositories, so ordinary
-  packages keep coming from Arch while `linux-cachyos`, `ckbcomp`, `yay` and
-  `paru` are available
-- Calamares 3.4.3 compiled locally with Python job modules
-- 13 desktop choices, 3 AUR helper choices, 3 bootloader choices
-- Default hostname `nyx`, branded `os-release` that keeps `ID=arch`
-- An update reporter that tells you what is available and installs nothing
+## What it is
 
-## Installer choices
+- Arch Linux userland, official `core` and `extra` repositories
+- The CachyOS repository is added **after** the Arch repositories, so ordinary
+  packages keep coming from Arch while `linux-cachyos` and the AUR helpers are
+  available
+- The CachyOS kernel, with its own initramfs
+- KDE Plasma on the installer, so the whole process is graphical
+- Branding throughout, with `ID=arch` deliberately left intact so Arch-based
+  package compatibility is unaffected
+
+## Requirements
+
+| | |
+| --- | --- |
+| Boot mode | UEFI only, GPT partitioned |
+| Secure Boot | must be disabled |
+| Architecture | x86_64 |
+| Free disk | 20 GB minimum |
+| RAM | 4 GB minimum |
+
+Legacy BIOS is not supported.
+
+## Getting the ISO
+
+Download the image and check it against the published checksum before writing
+it to a USB stick:
+
+```bash
+sha256sum -c nyx-linux-cachyos-calamares-2026.09.01-x86_64.iso.sha256
+```
+
+Use a DD-mode writer (Rufus, balenaEtcher) so the image is written verbatim
+rather than reinterpreted.
+
+## Installing
+
+1. Boot the USB stick in UEFI mode.
+2. The desktop comes up with the installer already open. There is no login to
+   type: the live session is a working environment on its own, and the
+   installer starts by itself.
+3. Work through the steps: locale, keyboard, desktop, AUR helper, partitioning,
+   user account, summary.
+4. For a normal install choose **Erase Disk** with GPT. Manual partitioning is
+   available if you want to lay out the partitions yourself.
+5. Keep the boot partition on the ESP. LUKS2 encryption for root is supported.
+6. When it finishes, remove the USB stick before rebooting, otherwise the
+   firmware may keep booting the installer.
+
+### Choices
 
 | Choice | Options |
 | --- | --- |
@@ -22,182 +64,100 @@ and packaged reproducibly.
 | AUR helper | Yay, Paru, or none |
 | Bootloader | Limine (default), systemd-boot, or GRUB |
 
-Limine is installed as a UEFI NVRAM entry with a fallback path. Calamares' own
-`bootloader` module is replaced by `nyx-configure-bootloader`, because the
+The bootloader choice is handled by Nyx's own script, because the installer's
 built-in module cannot install Limine. All three options read `/etc/fstab` and
-`/etc/crypttab`, so they build correct kernel command lines for btrfs
-subvolumes and LUKS (`rd.luks.uuid=`).
+`/etc/crypttab`, so the kernel command line is built correctly for btrfs
+subvolumes and encrypted roots.
 
-## Building
+Boot entries are registered as `Nyx Linux (Limine)`, `Nyx Linux (systemd-boot)`
+and `Nyx Linux (GRUB)`.
 
-The build needs a real Linux root with about 45 GB free, and roughly 10 GB of
-RAM. It cannot run inside an Arch live session: that session lives entirely in
-tmpfs, so the build fails with
-`At least 35 GiB of free space is required`.
+## On the installed system
 
-### WSL2 (verified path)
+| | |
+| --- | --- |
+| Kernel | `linux-cachyos` |
+| Repositories | Arch first, CachyOS appended |
+| Hostname | `nyx` |
+| `os-release` | `NAME="Nyx Linux"`, `PRETTY_NAME="Nyx Linux (Arch-based)"`, `ID=arch` |
+| Shell tooling | `base-devel`, `bash-completion`, `git`, `sudo`, `vim`, `nano`, `htop`, `jq` |
+| Media | `ffmpeg`, `pipewire`, `wireplumber` |
+| Networking | NetworkManager, `iwd`, `network-manager-applet` |
+| Disks | `btrfs-progs`, `lvm2`, `cryptsetup`, `smartmontools`, `nvme-cli` |
+| Fonts | Noto family, DejaVu, Liberation, including CJK and emoji |
 
-`wsl-build.sh` prepares everything from scratch: it unpacks `airootfs.sfs` from
-the official Arch ISO into a chroot, brings up a genuine `pacman`, `pacstrap`
-and `archiso` inside it, and then runs `build.sh`. The WSL disk has to be
-expanded to roughly 950 GB; the default 100 GB is not enough.
+`ID=arch` is intentional. A `filesystem` or `base` upgrade can restore the stock
+`os-release` from Arch, so a pacman hook puts the Nyx branding back afterwards
+while leaving `ID=arch` alone. Distro-agnostic tooling keeps working.
 
-```powershell
-# sync the project into WSL and run the static checks
-wsl -d Ubuntu -u root -e bash /path/to/wsl-sync-validate.sh
+### Desktop background
 
-# build the ISO
-wsl -d Ubuntu -u root -e bash /path/to/wsl-build.sh
-```
+The default background ships with the system and appears in the wallpaper
+chooser as **Nyx**. It is applied once, on first login. Change it whenever you
+like, nothing enforces it.
 
-Notes on that environment, all of which are load-bearing:
+### Limine
 
-- `pacstrap` requires the target directory to exist beforehand
-- the chroot needs `/etc/pacman.d/gnupg`, otherwise `pacman-key --init` cannot
-  populate the keyring
-- the WSL root does not appear in `mountinfo` from inside the chroot, so `/build`
-  has to be bind-mounted with `mount --rbind` **and** `--make-rprivate`; a plain
-  `--bind` hides the submounts underneath
-- `/proc`, `/dev` and `/sys` must be `rbind`-mounted from the host, otherwise
-  `/dev/fd` is missing and `build.sh` dies on its first line, because it logs
-  through `exec > >(tee ...)`
-- `/build/nyx` is a bind mount, but `/build/archbuild` must stay a plain
-  directory: `build.sh` begins with `rm -rf "$BUILD_ROOT"` and that fails on a
-  mount point
+The Limine boot menu has its own darker background, separate from the desktop
+one, because a boot menu needs a dark backdrop for the text to stay readable.
+Limine is refreshed automatically after a kernel update.
 
-### VirtualBox
+## Command line extras
 
-1. Create a Linux VM, Arch Linux 64-bit.
-2. RAM 6 GB with 16 GB on the host, 4 CPU cores.
-3. Dynamically allocated disk, 80–100 GB.
-4. Enable **EFI**, disable **Secure Boot**.
-5. Network: NAT.
-6. Mount the project as a VirtualBox Shared Folder named `archcustom`, writable.
-7. Attach the official `archlinux-2026.09.01-x86_64.iso` as optical media.
-8. Boot it, mount the share and run `vm-install-arch.sh`, which partitions,
-   installs Arch and creates the `nyx` user (password `arch`) with `sudo`.
-9. **Detach the installer ISO** before rebooting into the installed system.
-10. From the installed system, mount the share and run `sudo bash build.sh`.
+### `nyx-updates`
+
+Reports what is available to install. It installs nothing.
 
 ```bash
-sudo env KEEP_BUILD=1 JOBS=4 bash build.sh   # keep the tree for diagnostics
-```
-
-## Output
-
-```
-out/nyx-linux-cachyos-calamares-2026.09.01-x86_64.iso
-out/nyx-linux-cachyos-calamares-2026.09.01-x86_64.iso.sha256
-out/build-2026.09.01.log
-```
-
-`build.sh` refuses to finish successfully unless the finished image passes its
-content checks: CachyOS kernel present, Calamares present, the target rootfs
-carrying the service scripts and the fastfetch presets, a live account that can
-actually be logged into, and skel populated so the presets land in a home
-directory.
-
-## Branding
-
-- `NAME="Nyx Linux"`, `PRETTY_NAME="Nyx Linux (Arch-based)"`, `ID=arch`
-- Bootloader entries read `Nyx Linux (Limine)`, `Nyx Linux (systemd-boot)`,
-  `Nyx Linux (GRUB)`; GRUB's bootloader ID is `NyxLinux`
-- ISO metadata: publisher `Nyx Linux Project`
-- Default hostname `nyx`, in both the live image and the installed system
-- MOTD on the live console, and the Calamares welcome screen
-
-`filesystem` or `base` upgrades can restore `/usr/lib/os-release` from Arch, so
-the pacman hook `99-nyx-os-release.hook` puts the Nyx branding back while
-keeping `ID=arch`. The template lives at `/usr/share/arch-custom/nyx-os-release`.
-
-The ASCII logo is the [Nyarch Linux](https://github.com/fastfetch-cli/fastfetch)
-one, used as a visual reference; see `config/fastfetch/NYARCH-NOTICE.md` for
-its source and licence. Nyx Linux is a separate Arch-based derivative and does
-not claim to be an official Nyarch release.
-
-## fastfetch
-
-The default preset leads with fastfetch's `title` module, so the first line is
-`user@host` — `archiso@nyx` on the live session, your user on `nyx` after
-installing. The rest follows the official Nyarch preset from
-<https://github.com/LierB/fastfetch> (`presets/nyarch.jsonc`, by Bina).
-
-One deliberate deviation: the logo is a text file rather than a PNG over the
-kitty graphics protocol. Plasma's konsole does not speak kitty images, so a PNG
-logo would render as nothing. To switch back, set `"type": "kitty"` in the
-preset and point `source` at the image.
-
-```bash
-fastfetch            # default: user@host, then the Nyarch ASCII logo
-fastfetch -c nyarch  # same preset, named
-fastfetch -c arch    # plain Arch preset
-fastfetch --list 2>/dev/null; nyx-updates --list
-```
-
-## Update reporter
-
-`nyx-updates` reports what is available and installs nothing.
-
-```bash
-nyx-updates          # check, print a report, send a notification
-nyx-updates --list   # full package list
+nyx-updates          # check now, print a report, send a notification
+nyx-updates --list   # every package that is waiting
 nyx-updates --status # replay the last result, no network access
-nyx-updates --reset  # forget the baseline, next check reports everything
+nyx-updates --reset  # forget the baseline, so the next check reports everything
 ```
 
-It uses `checkupdates` from `pacman-contrib`, which syncs into a throwaway
-directory. `pacman -Sy` without `-u` would leave the real database out of step
-with the installed packages, which is a well known way to break a system.
+Arch, CachyOS and AUR are counted separately, because they move on different
+schedules. When the kernel is among the updates it is called out on its own
+line together with the reboot it requires.
 
-Arch, CachyOS and AUR are counted separately, and a kernel update is called out
-on its own line together with the reboot it requires. A `systemd` user timer
-runs the check five minutes after login and every twelve hours afterwards, with
-a random delay so a fleet of machines does not hit the mirrors in lockstep. It
-is a user unit because `notify-send` has to reach the running graphical
-session.
+A background check runs shortly after you log in and every twelve hours after
+that, with a random delay so a lot of machines do not query the mirrors in
+lockstep. It uses a throwaway package database, so checking never leaves your
+system's own database out of step with what is installed.
 
-## Desktop background
+### `fastfetch`
 
-The default background ships in `/usr/share/backgrounds/nyx.jpg` and as a Plasma
-wallpaper package in `/usr/share/wallpapers/nyx/`, so it appears in the
-wallpaper chooser. It is applied once on first login by
-`/usr/local/bin/nyx-apply-wallpaper` rather than by seeding
-`plasma-org.kde.plasma.desktop-appletsrc` into the skeleton, which is large and
-version-specific.
+```bash
+fastfetch
+```
 
-The Limine boot background is a separate, darker image: the boot menu needs a
-dark backdrop for the text to stay readable.
+The first line is `user@host` — `archiso@nyx` on the installer, your user on
+`nyx` once installed. The layout follows the community Nyarch preset, with a
+text logo so it renders in any terminal.
 
-## Checks
+```bash
+fastfetch -c nyarch   # the same preset, named
+fastfetch -c arch     # a plain Arch preset
+```
 
-`validate.sh` runs 136 static checks and needs no root: branding invariants, the
-Calamares sequence, module availability, pacman hook wiring, JSONC, YAML, XML,
-shellcheck, and the fastfetch preset layout.
+## This repository
 
-Two failure modes it exists to prevent, both of which shipped broken builds at
-some point:
+Contains the sources the image is built from, the branding, the installer
+configuration and the shipped helper scripts, together with a static checker
+that verifies the configuration before an image is produced.
 
-- a module named in `settings.conf` that the package does not build makes
-  Calamares refuse to start with *Calamares Initialization Failed*. Calamares
-  splits a module name at the **first** hyphen, so for `services-systemd` the
-  category is `services` and the implementation is `systemd`; `USE_services`
-  must be `systemd`, not the full module name
-- pacman honours only the **last** `Exec` line of a hook, and silently skips a
-  hook whose `Depends` names a package Arch does not ship (`chpasswd` is in
-  `shadow`, there is no `passwd` package)
+## Notes
 
-## Requirements and limits
-
-- UEFI/GPT only; Legacy BIOS is not supported
-- Secure Boot is not supported in this version
-- Test Limine, GRUB and Calamares in a VM before installing to real hardware
-- The CachyOS repository stays enabled in the installed system so that
-  `linux-cachyos` keeps updating; the repository order is deliberately
-  Arch-first
-- Back up your disk before a physical install
+- Test the installer in a virtual machine before using it on real hardware.
+- The CachyOS repository stays enabled after installation so that
+  `linux-cachyos` keeps receiving updates.
+- Back up your disk before installing to a physical machine.
 
 ## Legal
 
-Arch Linux is a registered trademark. Nyx Linux is a derivative distribution
-and must not be presented as an official Arch Linux image. The ISO is for
-personal use; publishing it means presenting Nyx Linux as a separate build.
+Arch Linux is a registered trademark. Nyx Linux is an independent derivative
+distribution and is not affiliated with, endorsed by, or presented as an
+official Arch Linux image.
+
+The ASCII logo in the default `fastfetch` preset is derived from the community
+Nyarch project; see `config/fastfetch/NYARCH-NOTICE.md` for its source and
+licence. Nyx Linux is not an official Nyarch release.

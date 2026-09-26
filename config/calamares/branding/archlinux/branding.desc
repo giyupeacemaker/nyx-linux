@@ -12,7 +12,7 @@ navigation: widget
 strings:
   productName: "Nyx Linux"
   shortProductName: "Nyx Linux"
-  version: "Comfy · Gaming · Bloatless"
+  version: "2026.09.01"
   shortVersion: "Nyx Linux"
   versionedName: "Nyx Linux (Arch-based)"
   shortVersionedName: "Nyx Linux"
