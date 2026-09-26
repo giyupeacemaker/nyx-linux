@@ -1,22 +1,25 @@
 // Nyx Linux default fastfetch preset.
 //
-// Module layout follows the official Nyarch preset from
-// https://github.com/LierB/fastfetch (presets/nyarch.jsonc, by Bina), so the
-// "title" module prints "user@host" as the very first line — on a stock Nyx
-// install that reads "nyx@nyx"-style user@hostname pairs, e.g. "archiso@nyx"
-// on the live session.
+// The module layout is the community Nyarch preset from
+// https://github.com/LierB/fastfetch (presets/nyarch.jsonc, by Bina), reused
+// because it does one thing well: the "title" module prints "user@host" as the
+// very first line. On an install that reads "nyx@nyx"; on the live session,
+// "archiso@nyx".
 //
-// One deliberate deviation from upstream: the logo is a text file rather than
-// ~/.config/fastfetch/images/nyarch.png over the kitty graphics protocol. The
-// live and installed systems use Plasma, where konsole does not speak kitty
-// images, so a PNG logo would render as nothing at all. Swap "type" to
-// "kitty" and point "source" at the png if you want it under kitty.
+// The logo is our own, drawn for this distribution: the peace sign and the word
+// NYX, in the same dark grey and cold blue as the rest of the branding. It lives
+// in nyx.ascii next to this file.
+//
+// A text logo rather than ~/.config/fastfetch/images/nyx.png over the kitty
+// graphics protocol, on purpose: the live and installed systems use Plasma, where
+// konsole does not speak kitty images, and a PNG would render as nothing at all.
+// Switch "type" to "kitty" and point "source" at a png if you want it under kitty.
 
 {
     "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
     "logo": {
         "type": "file",
-        "source": "~/.config/fastfetch/nyarch.ascii",
+        "source": "~/.config/fastfetch/nyx.ascii",
         "padding": {
             "right": 4
         }

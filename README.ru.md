@@ -168,7 +168,7 @@ fastfetch
 ```
 
 Первая строка вывода — `user@host` (на живой сессии это `archiso@nyx`, после
-установки — твой пользователь на `nyx`). Дальше идёт ASCII-арт Nyarch Linux и
+установки — твой пользователь на `nyx`). Дальше идёт собственный логотип Nyx — знак мира и слово NYX — и
 список модулей с ключами `~`. Раскладка взята из официального пресета Nyarch:
 <https://github.com/LierB/fastfetch> (`presets/nyarch.jsonc`), оттуда же модуль
 `title`, который и печатает `user@host`.
@@ -189,13 +189,13 @@ Plasma, где konsole этот протокол не понимает, и PNG-�
 fastfetch -c arch
 ```
 
-Явный запуск Nyarch-пресета:
+Явный запуск пресета Nyx:
 
 ```bash
-fastfetch -c nyarch
+fastfetch -c nyx
 ```
 
-ASCII Nyarch используется как визуальный референс для Nyx Linux. Название в `/etc/os-release` — Nyx Linux, но `ID=arch` сохранён, поэтому Arch-based совместимость и пакетная база остаются без изменений. Сборка не объявляется официальным релизом Nyarch. Источник и условия лицензии указаны в `config/fastfetch/NYARCH-NOTICE.md`.
+Логотип нарисован специально для этого дистрибутива. Название в `/etc/os-release` — Nyx Linux, но `ID=arch` сохранён, поэтому Arch-based совместимость и пакетная база остаются без изменений. Сборка не объявляется официальным релизом Arch Linux или Nyarch. Раскладка модулей пресета fastfetch позаимствована из сообщества: <https://github.com/LierB/fastfetch> (`presets/nyarch.jsonc`). Логотип — `config/fastfetch/nyx.ascii`, он оригинальный.
 
 Файлы `fastfetch` кладутся в `/etc/skel/.config/fastfetch`, поэтому пресеты появляются у live-пользователя и у пользователя после установки Calamares. В `/etc/os-release` меняется только имя Nyx Linux; `ID=arch` и Arch-репозитории сохраняются.
 

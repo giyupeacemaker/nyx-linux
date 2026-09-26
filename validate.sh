@@ -540,7 +540,7 @@ done
 sect "Default fastfetch preset"
 # The first module has to be "title", which prints user@host. Losing it would
 # silently drop the "user@nyx" line the default preset is meant to lead with.
-default_ff=config/fastfetch/nyarch.jsonc
+default_ff=config/fastfetch/nyx.jsonc
 if [[ -f "$default_ff" ]]; then
     first_module=$(jsonc_parse "$default_ff" 2>/dev/null)
     if [[ $? -ne 0 ]]; then
@@ -552,10 +552,10 @@ if [[ -f "$default_ff" ]]; then
         EMPTY) bad "default preset has no modules" ;;
         *) bad "default preset's first real module is '$first_module', expected 'title'" ;;
     esac
-    if grep -q 'nyarch.ascii' "$default_ff"; then
+    if grep -q 'nyx.ascii' "$default_ff"; then
         ok "default preset uses the shipped ASCII logo (works outside kitty)"
     else
-        bad "default preset does not reference nyarch.ascii"
+        bad "default preset does not reference nyx.ascii"
     fi
     # A kitty-image logo would render as nothing in konsole on Plasma.
     if grep -q '"type": "kitty"' "$default_ff"; then
@@ -1237,6 +1237,118 @@ if [[ -n "$nyx_section" ]]; then
     else
         bad "the content check does not list 'var/cache/nyx-repo/${want_db}.tar.*'"
     fi
+fi
+
+# --- fastfetch logo --------------------------------------------------------
+# The logo is our own artwork now. The previous one was borrowed from the Nyarch
+# project, which meant a second, stranger file sat in the skel next to the preset
+# that referenced it. The checks below make sure the preset points at a file that
+# exists, and that the borrowed artwork does not quietly come back.
+FF_DIR=config/fastfetch
+PRESET=$FF_DIR/nyx.jsonc
+LOGO=$FF_DIR/nyx.ascii
+
+if [[ -f "$PRESET" ]]; then
+    ok "the default fastfetch preset is present ($PRESET)"
+else
+    bad "the default fastfetch preset is missing"
+fi
+if [[ -f "$LOGO" ]]; then
+    ok "the Nyx logo file is present"
+    # A logo made of block characters has to carry real ESC bytes, otherwise
+    # fastfetch prints a wall of escape sequences as text.
+    esc=$(grep -c $'\033' "$LOGO" 2>/dev/null || true)
+    if (( ${esc:-0} > 0 )); then
+        ok "the logo carries colour escapes ($esc lines)"
+    else
+        bad "the logo has no ESC bytes; the colours would appear as literal text"
+    fi
+    # The peace sign is drawn with lines, and the word has to be there too.
+    if grep -q '│' "$LOGO" && grep -q '╱' "$LOGO"; then
+        ok "the logo contains a vertical bar and diagonals, so the peace sign is drawn"
+    else
+        bad "the logo has no peace sign lines"
+    fi
+    if [[ "$(sed 's/\x1b\[[0-9;]*m//g' "$LOGO" | tr -d ' ' | wc -c)" -gt 100 ]]; then
+        ok "the logo has real content"
+    else
+        bad "the logo is nearly empty"
+    fi
+else
+    bad "the Nyx logo file is missing"
+fi
+
+if [[ -f "$PRESET" ]]; then
+    # The preset has to point at the logo that actually ships. A dangling path
+    # renders as no logo at all and is easy to miss on a fresh install.
+    logo_ref="$(grep -oE '"source"[[:space:]]*:[[:space:]]*"[^"]*"' "$PRESET" \
+                | head -1 | sed 's/.*"\(.*\)"/\1/')"
+    if [[ -n "$logo_ref" ]]; then
+        base="${logo_ref##*/}"
+        if [[ "$base" == "$(basename "$LOGO")" ]]; then
+            ok "the preset points at $base"
+        else
+            bad "the preset points at '$base' but the shipped logo is '$(basename "$LOGO")'"
+        fi
+        if [[ -f "$FF_DIR/$base" ]]; then
+            ok "the referenced logo exists in config/fastfetch"
+        else
+            bad "the preset references $base, which is not in config/fastfetch"
+        fi
+    else
+        bad "the preset has no logo source"
+    fi
+    # A PNG over the kitty protocol would render as nothing under konsole.
+    if grep -q '"type"[[:space:]]*:[[:space:]]*"file"' "$PRESET"; then
+        ok "the logo is a text file, so it renders in konsole"
+    else
+        bad "the logo is not a text file; kitty images do not render under Plasma's konsole"
+    fi
+    # user@host has to be the first thing printed, which is why "title" is first
+    # and not just present somewhere in the list.
+    if python3 - "$PRESET" <<'PY' 2>/dev/null
+import json, re, sys
+t = open(sys.argv[1], encoding="utf-8").read()
+t = re.sub(r'^\s*//.*$', '', t, flags=re.M)
+t = re.sub(r',(\s*[}\]])', r'\1', t)
+mods = [m for m in json.loads(t)["modules"] if m != "break"]
+sys.exit(0 if mods and isinstance(mods[0], dict)
+         and mods[0].get("type") == "title" else 1)
+PY
+    then
+        ok "the title module comes first, so the first line is user@host"
+    else
+        bad "the title module is not first; the first line will not be user@host"
+    fi
+fi
+
+# The borrowed artwork must stay gone. It was a GPL file from another project,
+# and leaving it in the skel next to our own logo is how the wrong one ships.
+for stale in nyarch.ascii nyarch.jsonc NYARCH-NOTICE.md; do
+    if [[ -e "$FF_DIR/$stale" ]]; then
+        bad "config/fastfetch/$stale is back; the logo is our own now"
+    else
+        ok "no leftover $stale"
+    fi
+done
+
+# --- pacman options --------------------------------------------------------
+# CheckSpace makes pacman verify free space with statfs() on the package cache.
+# When installing into a fresh root with --sysroot, which is how mkarchiso builds
+# the live image, that path lives inside the root being created and does not
+# exist in the host namespace. pacman then reads the available space as zero and
+# aborts with "not enough free disk space" on a machine with 931 GB free.
+if grep -qE '^[[:space:]]*CheckSpace[[:space:]]*$' config/live-pacman.conf; then
+    bad "CheckSpace is enabled; it reports zero free space when installing into a fresh root"
+else
+    ok "CheckSpace is off, so pacman will not misreport the free space during a build"
+fi
+# A CacheDir pointing inside the root would be the same problem in another form.
+if grep -qE '^[[:space:]]*CacheDir[[:space:]]*=' config/live-pacman.conf; then
+    cd_line="$(grep -E '^[[:space:]]*CacheDir[[:space:]]*=' config/live-pacman.conf | head -1)"
+    warn "CacheDir is set explicitly: ${cd_line}"
+else
+    ok "CacheDir is left at the default, which is a real host directory"
 fi
 
 # --------------------------------------------------------------------------

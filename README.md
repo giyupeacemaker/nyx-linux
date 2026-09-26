@@ -281,11 +281,13 @@ fastfetch
 ```
 
 The first line is `user@host` — `archiso@nyx` on the installer, your user on
-`nyx` once installed. The layout follows the community Nyarch preset, with a
-text logo so it renders in any terminal.
+`nyx` once installed. The layout follows the community Nyarch preset, and the
+logo is our own: the peace sign and the word NYX in the same dark grey and cold
+blue as the rest of the branding. It is a text logo, so it renders in any
+terminal.
 
 ```bash
-fastfetch -c nyarch   # the same preset, named
+fastfetch -c nyx      # the same preset, named
 fastfetch -c arch     # a plain Arch preset
 ```
 
@@ -308,6 +310,8 @@ Arch Linux is a registered trademark. Nyx Linux is an independent derivative
 distribution and is not affiliated with, endorsed by, or presented as an
 official Arch Linux image.
 
-The ASCII logo in the default `fastfetch` preset is derived from the community
-Nyarch project; see `config/fastfetch/NYARCH-NOTICE.md` for its source and
-licence. Nyx Linux is not an official Nyarch release.
+The module layout of the default `fastfetch` preset follows the community
+[fastfetch](https://github.com/LierB/fastfetch) preset collection
+(`presets/nyarch.jsonc`, by Bina), reused for the way it puts `user@host` first.
+The logo is not from there: `config/fastfetch/nyx.ascii` is original artwork made
+for this distribution. Nyx Linux is not an official Nyarch release.

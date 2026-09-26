@@ -289,7 +289,7 @@ install -Dm0644 "$SRC/config/nyx-wallpaper.jpg" \
     "$BASE_ROOTFS/usr/share/wallpapers/nyx/contents.jpg"
 install -d -m 0755 "$BASE_ROOTFS/etc/skel/.config/fastfetch"
 cp -a "$SRC/config/fastfetch/." "$BASE_ROOTFS/etc/skel/.config/fastfetch/"
-install -m 0644 "$SRC/config/fastfetch/nyarch.jsonc" \
+install -m 0644 "$SRC/config/fastfetch/nyx.jsonc" \
     "$BASE_ROOTFS/etc/skel/.config/fastfetch/config.jsonc"
 
 # The default fastfetch preset starts with the "title" module, which prints
@@ -478,7 +478,7 @@ install -Dm0644 "$SRC/config/limine-bg.png" \
     "$AIROOTFS/usr/share/arch-custom/limine-bg.png"
 install -d -m 0755 "$AIROOTFS/etc/skel/.config/fastfetch"
 cp -a "$SRC/config/fastfetch/." "$AIROOTFS/etc/skel/.config/fastfetch/"
-install -m 0644 "$SRC/config/fastfetch/nyarch.jsonc" \
+install -m 0644 "$SRC/config/fastfetch/nyx.jsonc" \
     "$AIROOTFS/etc/skel/.config/fastfetch/config.jsonc"
 install -d -m 0755 "$AIROOTFS/usr/share/arch-custom/calamares"
 cp -a "$SRC/config/calamares/." "$AIROOTFS/usr/share/arch-custom/calamares/"
@@ -608,8 +608,8 @@ for required in \
     'etc/pacman.d/mirrorlist' \
     'etc/skel/.config/fastfetch/config.jsonc' \
     'etc/skel/.config/fastfetch/arch.jsonc' \
-    'etc/skel/.config/fastfetch/nyarch.ascii' \
-    'etc/skel/.config/fastfetch/nyarch.jsonc' \
+    'etc/skel/.config/fastfetch/nyx.ascii' \
+    'etc/skel/.config/fastfetch/nyx.jsonc' \
     'etc/hostname' \
     'usr/share/arch-custom/nyx-os-release'
 do
