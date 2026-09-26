@@ -36,14 +36,15 @@ depends=(
 optdepends=('snapper: instant snapshots on btrfs')
 optdepends+=('timeshift: snapshots on ext4 and other filesystems')
 
-source=('updates' 'rollback' 'tweaks' 'wallpaper' 'README'
+source=('updates' 'rollback' 'tweaks' 'motd' 'wallpaper' 'README'
         'updates.service' 'updates.timer' 'wallpaper.desktop')
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 package() {
   install -Dm0755 "$srcdir/updates"   "$pkgdir/usr/local/sbin/nyx-updates"
   install -Dm0755 "$srcdir/rollback"  "$pkgdir/usr/local/sbin/nyx-rollback"
   install -Dm0755 "$srcdir/tweaks"    "$pkgdir/usr/local/sbin/nyx-tweaks"
+  install -Dm0755 "$srcdir/motd"      "$pkgdir/usr/local/sbin/nyx-motd"
   install -Dm0755 "$srcdir/wallpaper" "$pkgdir/usr/local/bin/nyx-apply-wallpaper"
 
   install -Dm0644 "$srcdir/updates.service" \

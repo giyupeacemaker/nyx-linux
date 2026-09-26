@@ -236,6 +236,10 @@ install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/nyx-update-git" 
 # one bootloader: cp -a carries whatever mode came from the working copy.
 install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/lib/nyx/boot-params" \
     "$BASE_ROOTFS/usr/local/lib/nyx/boot-params"
+# The login greeting hook. It has to be readable and sourced rather than
+# executed, and the overlay arrives from a working copy, so state the mode.
+install -Dm0644 "$SRC/config/base-rootfs-overlay/etc/profile.d/nyx-greeting.sh" \
+    "$BASE_ROOTFS/etc/profile.d/nyx-greeting.sh"
 install -d -m 0755 "$BASE_ROOTFS/etc/nyx"
 cat >"$BASE_ROOTFS/etc/nyx/kernel-params" <<'EOF'
 # Nyx kernel parameters, appended after the ones the bootloader cannot boot
@@ -586,6 +590,7 @@ for required in \
     'usr/local/sbin/nyx-configure-bootloader' \
     'usr/local/sbin/nyx-update-git' \
     'usr/local/lib/nyx/boot-params' \
+    'etc/profile.d/nyx-greeting.sh' \
     'etc/nyx/kernel-params' \
     'var/cache/nyx-repo/nyx.db.tar.zst' \
     'var/cache/nyx-repo/nyx-tools' \

@@ -985,6 +985,92 @@ else
     bad "nyx-tools does not install nyx-tweaks"
 fi
 
+# source and sha256sums have to be the same length or makepkg aborts before it
+# compiles anything. Adding a source and forgetting the matching SKIP is the
+# easy mistake, and the failure message points at the checksum list rather than
+# at the omission.
+# Count items, not quotes: a PKGBUILD may use double quotes or none at all, and
+# both lists would then differ in quote characters while holding the same number
+# of entries. Note the grep -v on sha256sums: a "sed -n /start/,/end/p" range
+# includes its end line, so without it the source count picks up the checksums as
+# well and comes out as their sum.
+count_items() {
+    sed 's/^[A-Za-z_][A-Za-z0-9_]*=//' | tr -d "()'" \
+        | tr -s ' \t' '\n' | sed '/^$/d' | grep -cv '^$'
+}
+n_src=$(sed -n '/^source=/,/^sha256sums=/p' nyx-tools/PKGBUILD \
+        | grep -v '^sha256sums=' | count_items)
+n_skip=$(sed -n '/^sha256sums=/p' nyx-tools/PKGBUILD | count_items)
+if (( n_src == n_skip )); then
+    ok "nyx-tools has one sha256sums entry per source ($n_src)"
+else
+    bad "nyx-tools lists $n_src sources but $n_skip checksums; makepkg will refuse it"
+fi
+
+# Every source has to be a real file, and every source has to end up installed,
+# or a file is silently left out of the package.
+pkg_sources() {
+    sed -n '/^source=/,/^sha256sums=/p' nyx-tools/PKGBUILD \
+        | sed 's/^source=//; s/^sha256sums=.*//' \
+        | tr -d "()'" | tr ' ' '\n' | grep -v '^$'
+}
+pkg_body="$(sed -n '/^package()/,/^}/p' nyx-tools/PKGBUILD)"
+pkg_missing=""
+pkg_uninstalled=""
+while IFS= read -r s; do
+    [[ -z "$s" ]] && continue
+    [[ -f "nyx-tools/$s" ]] || pkg_missing+="$s "
+    grep -qF "srcdir/$s" <<<"$pkg_body" || pkg_uninstalled+="$s "
+done < <(pkg_sources)
+if [[ -z "$pkg_missing" ]]; then
+    ok "every nyx-tools source exists in the tree"
+else
+    bad "nyx-tools sources missing from the tree: ${pkg_missing% }"
+fi
+if [[ -z "$pkg_uninstalled" ]]; then
+    ok "every nyx-tools source is installed by package()"
+else
+    bad "nyx-tools sources declared but never installed: ${pkg_uninstalled% }"
+fi
+
+# --- the login greeting ----------------------------------------------------
+if [[ -f nyx-tools/motd ]] && is_shell_script nyx-tools/motd; then
+    ok "nyx-motd present"
+else
+    bad "nyx-motd missing or not a shell script"
+fi
+GR=config/base-rootfs-overlay/etc/profile.d/nyx-greeting.sh
+if [[ -f "$GR" ]]; then
+    ok "the login greeting hook present"
+    # Once per session, and never over ssh. Without both, every new shell
+    # repeats the greeting and it stops being read at all.
+    hook="$(code_only "$GR")"
+    if grep -q 'XDG_RUNTIME_DIR' <<<"$hook" && grep -q 'nyx-greeted' <<<"$hook"; then
+        ok "the greeting runs once per session"
+    else
+        bad "the greeting has no per-session marker and would repeat on every shell"
+    fi
+    if grep -q 'SSH_CONNECTION' <<<"$hook"; then
+        ok "the greeting stays quiet over ssh"
+    else
+        bad "the greeting would print on every ssh shell"
+    fi
+    # The greeting is decoration; a non-zero exit would leave a trace above the
+    # prompt for a user who did nothing wrong.
+    if grep -q 'exit 0' nyx-tools/motd; then
+        ok "nyx-motd always exits 0"
+    else
+        bad "nyx-motd can exit non-zero and would break the login"
+    fi
+else
+    bad "the login greeting hook is missing"
+fi
+if grep -q 'nyx-greeting.sh' build.sh; then
+    ok "build.sh installs the login greeting hook"
+else
+    bad "build.sh does not install the login greeting hook"
+fi
+
 # --------------------------------------------------------------------------
 printf '\n\033[1mChecks passed: %d, failed: %d\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1

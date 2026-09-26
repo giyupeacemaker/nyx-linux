@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# nyx-motd - the login greeting.
+#
+# Two things worth knowing the moment you sit down, and neither of which takes a
+# desktop notification to find:
+#
+#   1. what changed in Nyx itself since you were last here
+#   2. whether the kernel you are running is the one that is installed
+#
+# The second one is the reason this earns its place. A CachyOS kernel update
+# lands, pacman says nothing further, and the machine quietly keeps booting the
+# old one for a week. "Reboot to use the installed kernel" is the single most
+# useful sentence a login screen can say on this distribution.
+#
+# Deliberately cheap: the network request is bounded and a failure prints
+# nothing at all, no writes happen outside the user's own state directory, and
+# there is no output at all when there is nothing to say.
+set -Eeuo pipefail
+
+readonly REPO=giyupeacemaker/nyx-linux
+readonly API=https://api.github.com/repos/$REPO
+readonly STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/nyx
+readonly SEEN=$STATE_DIR/whatsnew.seen
+# Long enough for the first run on a slow connection, short enough that nobody
+# notices it. The alternative, a background job, is a lot of machinery for a
+# five line greeting.
+readonly TIMEOUT=4
+
+c_reset=''; c_dim=''; c_head=''; c_warn=''
+if [[ -t 1 ]]; then
+    c_reset=$'\033[0m'; c_dim=$'\033[2m'; c_head=$'\033[1;38;5;39m'
+    c_warn=$'\033[38;5;215m'
+fi
+
+# The greeting is decoration. If anything in here goes wrong, print nothing and
+# get out of the way rather than leaving a half drawn box over the prompt.
+main() { {
+    pending_kernel || true
+    whats_new || true
+} 2>/dev/null; exit 0; }
+
+pending_kernel() {
+    # A kernel file newer than the running one means an update landed and the
+    # machine has not been restarted into it. Comparing the two is more direct
+    # than trusting a flag file, which a crash can leave behind.
+    local running newest
+    running="$(uname -r)"
+    newest=""
+    local f
+    for f in /boot/vmlinuz-linux-*; do
+        [[ -e "$f" ]] || continue
+        local v="${f##*/vmlinuz-}"
+        v="${v%.img}"
+        if [[ -n "$v" && "$v" != "$running" ]]; then
+            newest="$v"
+            break
+        fi
+    done
+    [[ -n "$newest" ]] || return 0
+
+    printf '%s\n' "${c_warn}  Новое ядро установлено: ${newest}${c_reset}"
+    printf '%s\n' "${c_dim}  сейчас работает ${running} — нужна перезагрузка${c_reset}"
+    printf '\n'
+}
+
+# The ISO already shows the offline network notice, so stay quiet about it here.
+whats_new() {
+    command -v curl >/dev/null 2>&1 || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+
+    install -d -m 0700 "$STATE_DIR" 2>/dev/null || return 0
+    local since=""
+    [[ -r "$SEEN" ]] && since="$(head -n1 "$SEEN" 2>/dev/null || true)"
+
+    local url="$API/commits?per_page=8"
+    [[ -n "$since" ]] && url+="&since=${since}"
+
+    local body
+    body="$(curl -fsSL --max-time "$TIMEOUT" -H 'Accept: application/vnd.github+json' \
+                "$url" 2>/dev/null)" || return 0
+    [[ -n "$body" ]] || return 0
+
+    local lines
+    lines="$(printf '%s' "$body" | python3 -c '
+import json, sys
+try:
+    items = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if not isinstance(items, list) or not items:
+    sys.exit(0)
+for c in items[:5]:
+    msg = (c.get("commit", {}).get("message") or "").strip().splitlines()
+    if not msg:
+        continue
+    sha = (c.get("sha") or "")[:7]
+    date = (c.get("commit", {}).get("committer", {}).get("date") or "")[:10]
+    print(f"{sha}  {msg[0]}")
+    if date:
+        print(f"        {date}")
+' 2>/dev/null)" || return 0
+
+    # Nothing parsed means nothing to say, and the marker stays where it is so the
+    # same window is shown again next time rather than being silently skipped.
+    [[ -n "$lines" ]] || return 0
+
+    printf '%s\n' "${c_head}  Что изменилось в Nyx${c_reset}"
+    printf '%s\n' "$lines" | sed "s/^/    /"
+    printf '\n'
+
+    # Only now is the window genuinely seen, so this is the moment to move the
+    # marker. Writing it before printing would swallow the first greeting.
+    date -u +%Y-%m-%dT%H:%M:%SZ >"$SEEN" 2>/dev/null || true
+}
+
+main "$@"
