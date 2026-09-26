@@ -1,0 +1,16 @@
+[Unit]
+Description=Report available Nyx Linux updates
+Documentation=man:nyx-updates
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nyx-updates --quiet
+# A slow or unreachable mirror must never turn into a failed unit that retries
+# in a loop; the next timer tick is the retry.
+SuccessExitStatus=0
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

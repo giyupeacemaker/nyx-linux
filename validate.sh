@@ -26,12 +26,19 @@ sect() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
 # --------------------------------------------------------------------------
 sect "Shell script syntax"
+# Select real shell scripts by their shebang rather than by name pattern: a
+# glob like 'nyx-*' also matches nyx-updates.service, nyx-updates.timer and
+# nyx-wallpaper.desktop, and shellcheck rightly refuses those as shell.
+is_shell_script() {
+    [[ -f "$1" ]] || return 1
+    head -n 1 "$1" 2>/dev/null | grep -qE '^#!.*\b(bash|sh|ksh|dash|zsh)\b'
+}
 mapfile -t scripts < <(
     printf '%s\n' build.sh validate.sh vm-install-arch.sh
-    find config/base-rootfs-overlay -type f \( -name 'update-*' -o -name 'nyx-*' \) 2>/dev/null
+    find config/base-rootfs-overlay -type f 2>/dev/null
 )
 for s in "${scripts[@]}"; do
-    [[ -f "$s" ]] || continue
+    is_shell_script "$s" || continue
     if bash -n "$s" 2>/dev/null; then ok "bash -n $s"; else bad "bash -n $s"; fi
 done
 
@@ -39,7 +46,7 @@ done
 sect "ShellCheck (if available)"
 if command -v shellcheck >/dev/null 2>&1; then
     for s in "${scripts[@]}"; do
-        [[ -f "$s" ]] || continue
+        is_shell_script "$s" || continue
         if shellcheck -S warning "$s" >/tmp/sc.out 2>&1; then
             ok "shellcheck $s"
         else
@@ -67,11 +74,73 @@ fi
 
 # --------------------------------------------------------------------------
 sect "JSON (fastfetch presets)"
+# A naive `re.sub(r'//.*', '', text)` corrupts these presets, because "$schema"
+# and every URL sit inside JSON string values: the "//" of "https://" gets eaten
+# and the document stops parsing. Walk the text instead, tracking string state
+# and honouring backslash escapes.
+jsonc_parse() {
+    python3 - "$1" <<'PY'
+import json, re, sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+out = []
+i, n = 0, len(text)
+in_str = esc = False
+while i < n:
+    c = text[i]
+    if in_str:
+        if esc:
+            esc = False
+        elif c == "\\":
+            esc = True
+        elif c == '"':
+            in_str = False
+        out.append(c)
+        i += 1
+        continue
+    if c == '"':
+        in_str = True
+        out.append(c)
+        i += 1
+        continue
+    if c == "/" and i + 1 < n:
+        if text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+    out.append(c)
+    i += 1
+
+# Trailing commas are legal in JSONC and are used for readability here.
+body = re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+try:
+    data = json.loads(body)
+except Exception as exc:
+    print(exc, file=sys.stderr)
+    raise SystemExit(1)
+
+# On success also report the first real module, so the default-preset check
+# below can reuse this parser instead of keeping a second copy of it.
+mods = [m for m in data.get("modules", []) if m != "break"]
+if mods:
+    first = mods[0]
+    print(first.get("type", "?") if isinstance(first, dict) else str(first))
+else:
+    print("EMPTY")
+raise SystemExit(0)
+PY
+}
 while IFS= read -r f; do
-    if python3 -c 'import sys,json; json.load(open(sys.argv[1],encoding="utf-8"))' "$f" 2>/tmp/j.out; then
-        ok "JSON ${f#./}"
+    if jsonc_parse "$f" 2>/tmp/j.out; then
+        ok "JSONC ${f#./}"
     else
-        bad "JSON ${f#./}"; sed 's/^/       /' /tmp/j.out | head -5
+        bad "JSONC ${f#./}"; sed 's/^/       /' /tmp/j.out | head -5
     fi
 done < <(find config/fastfetch -type f -name '*.jsonc' | sort)
 
@@ -358,6 +427,55 @@ else
 fi
 
 # --------------------------------------------------------------------------
+sect "Calamares module availability"
+# A module listed in the sequence but absent from the package makes the whole
+# installer refuse to start with "Calamares Initialization Failed". Two ways
+# that happens silently: naming the module in SKIP_MODULES, or passing a
+# USE_<category> value that is not the implementation name. Calamares splits a
+# module name at the FIRST hyphen, so for "services-systemd" the category is
+# "services" and the implementation is "systemd"; USE_services is compared
+# against "systemd". Passing the full name silently drops the module.
+pkgbuild=vendor/calamares/PKGBUILD
+seq_file=config/calamares/settings.conf
+if [[ -f "$pkgbuild" && -f "$seq_file" ]]; then
+    # Modules the sequence needs, in the form Calamares resolves them.
+    mapfile -t wanted < <(sed -n '/^sequence:/,$p' "$seq_file" \
+        | grep -oE '^[[:space:]]*-[[:space:]]+[a-zA-Z0-9_-]+' \
+        | awk '{print $2}' | sort -u)
+    # Everything SKIP_MODULES asks cmake to drop.
+    skip_block=$(sed -n '/skip_modules=()/,/^  )/p' "$pkgbuild")
+    collide=()
+    for m in "${wanted[@]}"; do
+        [[ -z "$m" ]] && continue
+        if grep -qx "$m" <<<"$skip_block"; then
+            collide+=("$m")
+        fi
+    done
+    if (( ${#collide[@]} == 0 )); then
+        ok "no sequence module is listed in SKIP_MODULES"
+    else
+        bad "sequence modules skipped by the PKGBUILD: ${collide[*]}"
+    fi
+
+    # USE_ values must be a bare implementation, never a full module name.
+    while read -r var val; do
+        if [[ -n "$val" && "$val" != "none" && "$val" == *-* ]]; then
+            bad "PKGBUILD sets $var=$val; use the implementation name, not the full module name"
+        else
+            ok "$var=$val is a valid implementation name"
+        fi
+    done < <(grep -oE '\-DUSE_[a-zA-Z0-9_]+=[a-zA-Z0-9_-]+' "$pkgbuild" \
+             | sed 's/^-DUSE_/USE_/' | awk -F= '{print $1, $2}')
+
+    # The two service implementations must not be requested at once.
+    if [[ "$skip_block" == *services-openrc* && "$skip_block" != *services-systemd* ]]; then
+        ok "services-openrc is skipped so services-systemd can be built"
+    fi
+else
+    bad "PKGBUILD or settings.conf not found"
+fi
+
+# --------------------------------------------------------------------------
 sect "Branding URLs"
 branding=config/calamares/branding/archlinux/branding.desc
 if [[ -f "$branding" ]]; then
@@ -391,6 +509,120 @@ for flag in showSupportUrl showKnownIssuesUrl showReleaseNotesUrl; do
         bad "welcome.conf leaves $flag off, so the link is never shown"
     fi
 done
+
+# --------------------------------------------------------------------------
+sect "Default fastfetch preset"
+# The first module has to be "title", which prints user@host. Losing it would
+# silently drop the "user@nyx" line the default preset is meant to lead with.
+default_ff=config/fastfetch/nyarch.jsonc
+if [[ -f "$default_ff" ]]; then
+    first_module=$(jsonc_parse "$default_ff" 2>/dev/null)
+    if [[ $? -ne 0 ]]; then
+        first_module="PARSE_ERROR"
+    fi
+    case "$first_module" in
+        title) ok "default preset leads with the title module (user@host)" ;;
+        PARSE_ERROR) bad "default fastfetch preset is not valid JSONC" ;;
+        EMPTY) bad "default preset has no modules" ;;
+        *) bad "default preset's first real module is '$first_module', expected 'title'" ;;
+    esac
+    if grep -q 'nyarch.ascii' "$default_ff"; then
+        ok "default preset uses the shipped ASCII logo (works outside kitty)"
+    else
+        bad "default preset does not reference nyarch.ascii"
+    fi
+    # A kitty-image logo would render as nothing in konsole on Plasma.
+    if grep -q '"type": "kitty"' "$default_ff"; then
+        bad "default preset uses the kitty image protocol; Plasma's konsole cannot draw it"
+    else
+        ok "default preset avoids the kitty image protocol"
+    fi
+else
+    bad "$default_ff not found"
+fi
+if [[ -e config/fastfetch/giyupeacemaker.jsonc || -e config/fastfetch/peace.ascii ]]; then
+    bad "the retired giyupeacemaker preset is still present"
+else
+    ok "retired giyupeacemaker preset is gone"
+fi
+if grep -qE 'giyupeacemaker\.jsonc|peace\.ascii' build.sh; then
+    bad "build.sh still requires the retired giyupeacemaker files"
+else
+    ok "build.sh no longer requires the retired files"
+fi
+if grep -q 'BASE_ROOTFS/etc/hostname' build.sh; then
+    ok "installed system gets the nyx hostname"
+else
+    bad "installed system has no hostname set; user@host would show localhost"
+fi
+
+# --------------------------------------------------------------------------
+sect "ISO boot menu branding"
+# releng's systemd-boot entries are titled "Arch Linux install medium", and the
+# boot menu is the first thing seen on any machine. build.sh retitles them; make
+# sure that step stays in place.
+if grep -q 'Nyx Linux (x86_64, UEFI)' build.sh; then
+    ok "build.sh retitles the ISO boot entries"
+else
+    bad "build.sh does not retitle the ISO boot entries"
+fi
+# The options lines carry archisosearchuuid and must not be touched.
+if grep -qE "s\|[^|]*(\^|\b)options" build.sh; then
+    bad "build.sh rewrites boot entry options lines; archisosearchuuid must stay"
+else
+    ok "boot entry options lines are left alone"
+fi
+
+# --------------------------------------------------------------------------
+sect "Desktop background and update reporter"
+for f in config/nyx-wallpaper.jpg config/wallpaper-metadata.json \
+         config/base-rootfs-overlay/usr/local/bin/nyx-apply-wallpaper \
+         config/base-rootfs-overlay/usr/local/sbin/nyx-updates \
+         config/base-rootfs-overlay/usr/lib/systemd/user/nyx-updates.service \
+         config/base-rootfs-overlay/usr/lib/systemd/user/nyx-updates.timer; do
+    if [[ -f "$f" ]]; then ok "$(basename "$f") present"; else bad "$f missing"; fi
+done
+# The Limine boot background and the desktop background are separate files on
+# purpose: the boot menu needs a dark, readable backdrop, the desktop is the
+# user's own choice.
+if [[ -f config/limine-bg.png && -f config/nyx-wallpaper.jpg ]]; then
+    if cmp -s config/limine-bg.png config/nyx-wallpaper.jpg; then
+        warn "boot background and desktop background are the same file"
+    else
+        ok "boot background and desktop background are separate images"
+    fi
+fi
+if grep -q 'nyx-wallpaper.jpg' build.sh; then
+    ok "build.sh installs the desktop background"
+else
+    bad "build.sh does not install the desktop background"
+fi
+if grep -q 'wallpapers/nyx' build.sh; then
+    ok "build.sh ships a Plasma wallpaper package"
+else
+    bad "no Plasma wallpaper package is installed"
+fi
+# checkupdates comes from pacman-contrib; without it the reporter cannot run.
+if grep -qE '^[[:space:]]*-[[:space:]]*pacman-contrib[[:space:]]*$' config/calamares/modules/packages.conf; then
+    ok "pacman-contrib is installed into the target system"
+else
+    bad "pacman-contrib is missing; checkupdates will not exist"
+fi
+if bash -n config/base-rootfs-overlay/usr/local/sbin/nyx-updates 2>/dev/null; then
+    ok "nyx-updates passes a bash syntax check"
+else
+    bad "nyx-updates has a syntax error"
+fi
+if grep -q 'checkupdates' config/base-rootfs-overlay/usr/local/sbin/nyx-updates; then
+    ok "nyx-updates uses checkupdates rather than pacman -Sy"
+else
+    bad "nyx-updates does not use checkupdates"
+fi
+if grep -q '12h' config/base-rootfs-overlay/usr/lib/systemd/user/nyx-updates.timer; then
+    ok "update timer runs every 12h"
+else
+    bad "update timer interval is not 12h"
+fi
 
 # --------------------------------------------------------------------------
 printf '\n\033[1mChecks passed: %d, failed: %d\033[0m\n' "$PASS" "$FAIL"

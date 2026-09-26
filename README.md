@@ -1,199 +1,203 @@
 # Nyx Linux
 
-Nyx Linux — Arch-based live ISO с Calamares: **Comfy · Gaming · Bloatless**.
+**Comfy · Gaming · Bloatless**
 
-Репозиторий: <https://github.com/giyupeacemaker/nyx-linux>
+An Arch-based live ISO with a Calamares graphical installer, built from source
+and packaged reproducibly.
 
-## Что внутри
+- Arch userland, `ID=arch`, official `core`/`extra` only
+- CachyOS repository appended **after** the Arch repositories, so ordinary
+  packages keep coming from Arch while `linux-cachyos`, `ckbcomp`, `yay` and
+  `paru` are available
+- Calamares 3.4.3 compiled locally with Python job modules
+- 13 desktop choices, 3 AUR helper choices, 3 bootloader choices
+- Default hostname `nyx`, branded `os-release` that keeps `ID=arch`
+- An update reporter that tells you what is available and installs nothing
 
-- Arch Linux userland и официальные репозитории `core`/`extra`.
-- CachyOS-репозиторий подключён **после** Arch-репозиториев, поэтому обычные пакеты берутся из Arch, а из CachyOS доступны `linux-cachyos`, `ckbcomp`, `yay` и `paru`.
-- Calamares 3.4.3 собирается локально из исходников с Python job-модулями.
-- Live-окружение: KDE Plasma, SDDM, Calamares, NetworkManager, VirtualBox Guest Additions.
-- Устанавливаемая система: минимальная Arch-based база, `git`, `wget`, `curl`, `sudo`, `base-devel`, NetworkManager, `fastfetch`, `noto-fonts-emoji` и `noto-fonts-cjk`.
-- Выбор рабочего стола: KDE Plasma, GNOME, XFCE, MATE, Cinnamon, Budgie, LXQt, Deepin, Enlightenment, Pantheon, Sway, Hyprland, i3 или минимальная система.
-- Выбор AUR-помощника: Yay, Paru или не устанавливать.
-- Выбор загрузчика: Limine (по умолчанию), systemd-boot или GRUB. Все три настраивает собственный скрипт `nyx-configure-bootloader` (встроенный модуль Calamares не умеет ставить Limine).
-- UEFI/GPT, Limine/systemd-boot/GRUB, поддержка LUKS и ручной разметки.
-- `fastfetch` установлен в live и итоговую систему.
-- В target rootfs кладутся `mirrorlist` и служебные скрипты, поэтому установка пакетов Calamares работает автономно от настроек хостовой VM.
+## Installer choices
 
-## Что понадобится в VirtualBox
+| Choice | Options |
+| --- | --- |
+| Desktop | KDE Plasma, GNOME, XFCE, MATE, Cinnamon, Budgie, LXQt, Deepin, Enlightenment, Pantheon, Sway, Hyprland, i3, or none |
+| AUR helper | Yay, Paru, or none |
+| Bootloader | Limine (default), systemd-boot, or GRUB |
 
-1. Создай VM типа Linux, версия Arch Linux 64-bit.
-2. RAM: 6 ГБ (при 16 ГБ на хосте), CPU: 4 ядра.
-3. VDI: динамический диск 80–100 ГБ. Внутри VM нужно **не меньше 45 ГБ** свободного места: сам build занимает ~35 ГБ, плюс место под установленную Arch и итоговый ISO.
-4. Включи **EFI** и отключи **Secure Boot**.
-5. Сеть: NAT.
-6. Подключи папку проекта как VirtualBox Shared Folder с именем `archcustom` и правом записи.
-7. Подключи официальный `archlinux-2026.09.01-x86_64.iso` как оптический диск.
+Limine is installed as a UEFI NVRAM entry with a fallback path. Calamares' own
+`bootloader` module is replaced by `nyx-configure-bootloader`, because the
+built-in module cannot install Limine. All three options read `/etc/fstab` and
+`/etc/crypttab`, so they build correct kernel command lines for btrfs
+subvolumes and LUKS (`rd.luks.uuid=`).
 
-## Важно: собирать нужно из установленной Arch, а не из live-сессии
+## Building
 
-Live-сессия Arch целиком живёт в tmpfs, то есть в оперативной памяти. Сборке нужно
-~35 ГБ на диске, поэтому прямо в live-сессии она упадёт с ошибкой
-`At least 35 GiB of free space is required in the VM`.
+The build needs a real Linux root with about 45 GB free, and roughly 10 GB of
+RAM. It cannot run inside an Arch live session: that session lives entirely in
+tmpfs, so the build fails with
+`At least 35 GiB of free space is required`.
 
-Порядок такой:
+### WSL2 (verified path)
 
-1. Загрузись с официального Arch ISO в UEFI-режиме.
-2. Смонтируй общую папку и запусти готовый скрипт установки:
+`wsl-build.sh` prepares everything from scratch: it unpacks `airootfs.sfs` from
+the official Arch ISO into a chroot, brings up a genuine `pacman`, `pacstrap`
+and `archiso` inside it, and then runs `build.sh`. The WSL disk has to be
+expanded to roughly 950 GB; the default 100 GB is not enough.
 
-   ```bash
-   mkdir -p /mnt/project
-   mount -t vboxsf archcustom /mnt/project
-   cd /mnt/project
-   bash vm-install-arch.sh
-   ```
+```powershell
+# sync the project into WSL and run the static checks
+wsl -d Ubuntu -u root -e bash /path/to/wsl-sync-validate.sh
 
-   Скрипт разметит диск, поставит Arch, создаст пользователя `nyx` (пароль `arch`)
-   с `sudo` и сразу покажет команды для сборки. Если ставишь Arch руками, нужен
-   раздел `/` на 50+ ГБ, ESP `/boot` 1 ГБ, GPT и пользователь в группе `wheel`.
-
-3. **Извлеки ISO из VirtualBox** и перезагрузись в установленную систему.
-4. Подключи общую папку и запусти сборку.
-
-## Сборка
-
-В установленной Arch подключи общую папку:
-
-```bash
-sudo pacman -Syu --needed virtualbox-guest-utils-nox
-sudo modprobe vboxsf
-sudo mkdir -p /mnt/project
-sudo mount -t vboxsf archcustom /mnt/project
-cd /mnt/project
+# build the ISO
+wsl -d Ubuntu -u root -e bash /path/to/wsl-build.sh
 ```
 
-Проверь, что места хватает (должно быть свободно не меньше 45 ГБ):
+Notes on that environment, all of which are load-bearing:
+
+- `pacstrap` requires the target directory to exist beforehand
+- the chroot needs `/etc/pacman.d/gnupg`, otherwise `pacman-key --init` cannot
+  populate the keyring
+- the WSL root does not appear in `mountinfo` from inside the chroot, so `/build`
+  has to be bind-mounted with `mount --rbind` **and** `--make-rprivate`; a plain
+  `--bind` hides the submounts underneath
+- `/proc`, `/dev` and `/sys` must be `rbind`-mounted from the host, otherwise
+  `/dev/fd` is missing and `build.sh` dies on its first line, because it logs
+  through `exec > >(tee ...)`
+- `/build/nyx` is a bind mount, but `/build/archbuild` must stay a plain
+  directory: `build.sh` begins with `rm -rf "$BUILD_ROOT"` and that fails on a
+  mount point
+
+### VirtualBox
+
+1. Create a Linux VM, Arch Linux 64-bit.
+2. RAM 6 GB with 16 GB on the host, 4 CPU cores.
+3. Dynamically allocated disk, 80–100 GB.
+4. Enable **EFI**, disable **Secure Boot**.
+5. Network: NAT.
+6. Mount the project as a VirtualBox Shared Folder named `archcustom`, writable.
+7. Attach the official `archlinux-2026.09.01-x86_64.iso` as optical media.
+8. Boot it, mount the share and run `vm-install-arch.sh`, which partitions,
+   installs Arch and creates the `nyx` user (password `arch`) with `sudo`.
+9. **Detach the installer ISO** before rebooting into the installed system.
+10. From the installed system, mount the share and run `sudo bash build.sh`.
 
 ```bash
-df -h /
+sudo env KEEP_BUILD=1 JOBS=4 bash build.sh   # keep the tree for diagnostics
 ```
 
-Запуск сборки:
+## Output
 
-```bash
-sudo bash build.sh
 ```
-
-Для диагностики можно оставить временные файлы сборки:
-
-```bash
-sudo env KEEP_BUILD=1 JOBS=4 bash build.sh
-```
-
-Сборка делается внутри Linux VM, а не в Windows. Скрипт:
-
-1. установит сборочные зависимости;
-2. соберёт Calamares 3.4.3;
-3. создаст минимальный rootfs с CachyOS-репозиторием и собственным `mirrorlist`;
-4. подготовит профиль `archiso`;
-5. соберёт UEFI ISO;
-6. проверит наличие ядра, Calamares, base rootfs, служебных скриптов, CachyOS keyring и всех fastfetch-пресетов.
-
-Результат появится в общей папке:
-
-```text
 out/nyx-linux-cachyos-calamares-2026.09.01-x86_64.iso
 out/nyx-linux-cachyos-calamares-2026.09.01-x86_64.iso.sha256
 out/build-2026.09.01.log
 ```
 
-## Сборка в WSL2 (проверенный путь)
+`build.sh` refuses to finish successfully unless the finished image passes its
+content checks: CachyOS kernel present, Calamares present, the target rootfs
+carrying the service scripts and the fastfetch presets, a live account that can
+actually be logged into, and skel populated so the presets land in a home
+directory.
 
-Сборка на Windows идёт через WSL2 с отдельным Arch-окружением. Прямо в
-live-сессии Arch собрать нельзя: она целиком в tmpfs, то есть в оперативной
-памяти, а сборке нужно ~35 ГБ на диске.
+## Branding
 
-`wsl-build.sh` готовит это окружение с нуля: распаковывает `airootfs.sfs` из
-официального ISO в chroot, поднимает в нём настоящий `pacman`/`pacstrap` и
-`archiso`, после чего запускает `build.sh`. Диск WSL должен быть расширен
-примерно до 950 ГБ — на стандартном 100 ГБ сборка не поместится.
+- `NAME="Nyx Linux"`, `PRETTY_NAME="Nyx Linux (Arch-based)"`, `ID=arch`
+- Bootloader entries read `Nyx Linux (Limine)`, `Nyx Linux (systemd-boot)`,
+  `Nyx Linux (GRUB)`; GRUB's bootloader ID is `NyxLinux`
+- ISO metadata: publisher `Nyx Linux Project`
+- Default hostname `nyx`, in both the live image and the installed system
+- MOTD on the live console, and the Calamares welcome screen
 
-```powershell
-# синхронизировать проект в WSL и прогнать статические проверки
-wsl -d Ubuntu -u root -e bash /mnt/c/Users/giyu/AppData/Local/Temp/opencode/wsl-sync-validate.sh
+`filesystem` or `base` upgrades can restore `/usr/lib/os-release` from Arch, so
+the pacman hook `99-nyx-os-release.hook` puts the Nyx branding back while
+keeping `ID=arch`. The template lives at `/usr/share/arch-custom/nyx-os-release`.
 
-# собрать ISO
-wsl -d Ubuntu -u root -e bash /mnt/c/Users/giyu/AppData/Local/Temp/opencode/wsl-build.sh
-```
+The ASCII logo is the [Nyarch Linux](https://github.com/fastfetch-cli/fastfetch)
+one, used as a visual reference; see `config/fastfetch/NYARCH-NOTICE.md` for
+its source and licence. Nyx Linux is a separate Arch-based derivative and does
+not claim to be an official Nyarch release.
 
-Лог пишется в `out/build-2026.09.01.log`. Готовый образ появляется в `out/`
-вместе с `.sha256`.
+## fastfetch
 
-Особенности окружения, без которых chroot не стартует:
+The default preset leads with fastfetch's `title` module, so the first line is
+`user@host` — `archiso@nyx` on the live session, your user on `nyx` after
+installing. The rest follows the official Nyarch preset from
+<https://github.com/LierB/fastfetch> (`presets/nyarch.jsonc`, by Bina).
 
-- `pacstrap` требует, чтобы каталог назначения уже существовал;
-- в chroot нужен `/etc/pacman.d/gnupg`, иначе `pacman-key` не инициализируется —
-  лечится `pacman-key --init`;
-- корень WSL не виден в `mountinfo` изнутри chroot, поэтому `/build` приходится
-  монтировать через `mount --rbind ... --make-rprivate`: обычный `--bind`
-  перекрывает подмонтирования.
-
-## Первая установка
-
-1. Создай новую тестовую VM и подключи собранный ISO.
-2. Загрузись в UEFI. Calamares должен открыться автоматически через SDDM.
-3. Сделай выбор рабочего стола, AUR-помощника и загрузчика.
-4. Для обычной установки выбери `Erase` и GPT. Ручная разметка тоже доступна.
-5. Оставь UEFI, `/boot` на ESP и желательно LUKS2 для root.
-6. После завершения **извлеки исходный ISO из VirtualBox перед перезагрузкой**, иначе UEFI может продолжить загружать установочный диск.
-
-Limine устанавливается в UEFI, получает NVRAM-запись и fallback-путь. Его тема и меню находятся в `config/limine-bg.png`; конфигурация обновляется pacman hook после обновления ядра. Secure Boot для этой первой версии не поддерживается.
-
-Выбор загрузчика обрабатывает `nyx-configure-bootloader`:
-
-- **Limine** — ставит NVRAM-запись `Nyx Linux (Limine)`, fallback `EFI/BOOT/BOOTX64.EFI` и меню из `update-arch-limine`;
-- **systemd-boot** — пишет `loader/entries/10-nyx-linux.conf` и `loader.conf`, затем вызывает `bootctl install` и регистрирует запись `Nyx Linux (systemd-boot)`;
-- **GRUB** — `grub-install --target=x86_64-efi` c `--bootloader-id=NyxLinux`, затем `grub-mkconfig`, запись `Nyx Linux (GRUB)`.
-
-Все три варианта читают `/etc/fstab` и `/etc/crypttab`, поэтому корректно собирают cmdline для btrfs-подтомов и LUKS (`rd.luks.uuid=`).
-
-## Название и fastfetch
-
-В системе:
-
-- `ID=arch` — Arch-based совместимость сохранена;
-- `NAME="Nyx Linux"`;
-- `PRETTY_NAME="Nyx Linux (Arch-based)"`;
-- `VERSION_ID` соответствует дате сборки.
-
-Обычные обновления `filesystem`/`base` могут вернуть `/usr/lib/os-release` к оригиналу Arch, поэтому pacman hook `99-nyx-os-release.hook` автоматически восстанавливает брендинг Nyx, сохраняя `ID=arch`. Шаблон лежит в `/usr/share/arch-custom/nyx-os-release`.
-
-По умолчанию для Nyx Linux:
+One deliberate deviation: the logo is a text file rather than a PNG over the
+kitty graphics protocol. Plasma's konsole does not speak kitty images, so a PNG
+logo would render as nothing. To switch back, set `"type": "kitty"` in the
+preset and point `source` at the image.
 
 ```bash
-fastfetch
+fastfetch            # default: user@host, then the Nyarch ASCII logo
+fastfetch -c nyarch  # same preset, named
+fastfetch -c arch    # plain Arch preset
+fastfetch --list 2>/dev/null; nyx-updates --list
 ```
 
-использует ASCII-арт Nyarch Linux и заголовок `Nyx Linux`. Отдельный обычный Arch-вариант:
+## Update reporter
+
+`nyx-updates` reports what is available and installs nothing.
 
 ```bash
-fastfetch -c arch
+nyx-updates          # check, print a report, send a notification
+nyx-updates --list   # full package list
+nyx-updates --status # replay the last result, no network access
+nyx-updates --reset  # forget the baseline, next check reports everything
 ```
 
-Peace-sign пресет:
+It uses `checkupdates` from `pacman-contrib`, which syncs into a throwaway
+directory. `pacman -Sy` without `-u` would leave the real database out of step
+with the installed packages, which is a well known way to break a system.
 
-```bash
-fastfetch -c giyupeacemaker
-```
+Arch, CachyOS and AUR are counted separately, and a kernel update is called out
+on its own line together with the reboot it requires. A `systemd` user timer
+runs the check five minutes after login and every twelve hours afterwards, with
+a random delay so a fleet of machines does not hit the mirrors in lockstep. It
+is a user unit because `notify-send` has to reach the running graphical
+session.
 
-Явный запуск Nyarch-пресета:
+## Desktop background
 
-```bash
-fastfetch -c nyarch
-```
+The default background ships in `/usr/share/backgrounds/nyx.jpg` and as a Plasma
+wallpaper package in `/usr/share/wallpapers/nyx/`, so it appears in the
+wallpaper chooser. It is applied once on first login by
+`/usr/local/bin/nyx-apply-wallpaper` rather than by seeding
+`plasma-org.kde.plasma.desktop-appletsrc` into the skeleton, which is large and
+version-specific.
 
-ASCII Nyarch используется как визуальный референс для Nyx Linux. Название в `/etc/os-release` — Nyx Linux, но `ID=arch` сохранён, поэтому Arch-based совместимость и пакетная база остаются без изменений. Сборка не объявляется официальным релизом Nyarch. Источник и условия лицензии указаны в `config/fastfetch/NYARCH-NOTICE.md`.
+The Limine boot background is a separate, darker image: the boot menu needs a
+dark backdrop for the text to stay readable.
 
-Файлы `fastfetch` кладутся в `/etc/skel/.config/fastfetch`, поэтому пресеты появляются у live-пользователя и у пользователя после установки Calamares. В `/etc/os-release` меняется только имя Nyx Linux; `ID=arch` и Arch-репозитории сохраняются.
+## Checks
 
-Для личного использования это нормально. Публикуя ISO, указывай Nyx Linux как отдельную сборку, производную от Arch Linux: Arch Linux — зарегистрированная торговая марка, а модифицированный продукт не должен выглядеть официальным ISO Arch.
+`validate.sh` runs 136 static checks and needs no root: branding invariants, the
+Calamares sequence, module availability, pacman hook wiring, JSONC, YAML, XML,
+shellcheck, and the fastfetch preset layout.
 
-## Важные ограничения первой версии
+Two failure modes it exists to prevent, both of which shipped broken builds at
+some point:
 
-- Только UEFI/GPT; Legacy BIOS не поддерживается.
-- Limine, GRUB и Calamares нужно тестировать в отдельной VM перед установкой на физический компьютер.
-- CachyOS-репозиторий остаётся в установленной системе для обновления `linux-cachyos`; порядок репозиториев специально оставлен Arch-first.
-- Перед физической установкой сделай резервную копию диска.
+- a module named in `settings.conf` that the package does not build makes
+  Calamares refuse to start with *Calamares Initialization Failed*. Calamares
+  splits a module name at the **first** hyphen, so for `services-systemd` the
+  category is `services` and the implementation is `systemd`; `USE_services`
+  must be `systemd`, not the full module name
+- pacman honours only the **last** `Exec` line of a hook, and silently skips a
+  hook whose `Depends` names a package Arch does not ship (`chpasswd` is in
+  `shadow`, there is no `passwd` package)
+
+## Requirements and limits
+
+- UEFI/GPT only; Legacy BIOS is not supported
+- Secure Boot is not supported in this version
+- Test Limine, GRUB and Calamares in a VM before installing to real hardware
+- The CachyOS repository stays enabled in the installed system so that
+  `linux-cachyos` keeps updating; the repository order is deliberately
+  Arch-first
+- Back up your disk before a physical install
+
+## Legal
+
+Arch Linux is a registered trademark. Nyx Linux is a derivative distribution
+and must not be presented as an official Arch Linux image. The ISO is for
+personal use; publishing it means presenting Nyx Linux as a separate build.

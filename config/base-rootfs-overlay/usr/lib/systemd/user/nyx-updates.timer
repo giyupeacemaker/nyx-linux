@@ -1,0 +1,15 @@
+[Unit]
+Description=Check for Nyx Linux updates twice a day
+Documentation=man:nyx-updates
+
+[Timer]
+# Once shortly after the desktop session comes up, then every 12 hours.
+OnStartupSec=5min
+OnUnitActiveSec=12h
+# Spread the load so many machines do not hit the mirrors at the same second.
+RandomizedDelaySec=30min
+AccuracySec=1min
+Unit=nyx-updates.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# nyx-updates - report available updates without installing anything.
+#
+# Deliberately a reporter, not an updater: it never touches the system
+# database. `checkupdates` from pacman-contrib syncs into a throwaway
+# directory, whereas `pacman -Sy` without `-u` would leave the real database
+# out of step with the installed packages, which is a well known way to break
+# a system.
+#
+# Two channels are reported separately because they behave differently: the
+# CachyOS repository supplies the kernel and moves on its own schedule, while
+# Arch is the general base. A kernel update additionally needs a reboot, so it
+# is always called out on its own line.
+#
+# The same state directory is reused to suppress repeat notifications: a timer
+# that re-announces an unchanged list every few hours gets switched off within
+# a week, so only packages that appeared since the last report are announced.
+set -uo pipefail
+
+readonly STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nyx-updates"
+readonly STATE_FILE="$STATE_DIR/last-reported"
+readonly MAX_LIST=40
+
+# Repository name prefixes treated as the CachyOS / kernel channel.
+readonly CACHYOS_RE='^cachyos'
+
+# Kernel packages: a CachyOS kernel update requires a reboot to take effect.
+readonly KERNEL_RE='^(linux-cachyos|linux-cachyos-[a-z0-9]+|linux-[0-9][0-9.]*(-lts)?)$'
+
+c_reset=''; c_dim=''; c_arch=''; c_cachy=''; c_aur=''; c_kernel=''; c_ok=''; c_warn=''
+if [[ -t 1 ]]; then
+    c_reset=$'\033[0m'; c_dim=$'\033[2m'; c_arch=$'\033[38;5;39m'
+    c_cachy=$'\033[38;5;170m'; c_aur=$'\033[38;5;179m'
+    c_kernel=$'\033[1;38;5;203m'; c_ok=$'\033[38;5;114m'; c_warn=$'\033[38;5;215m'
+fi
+
+usage() {
+    cat <<'EOF'
+Использование: nyx-updates [опции]
+
+  (без опций)  проверить обновления, напечатать отчёт и прислать уведомление
+  --status      показать, что уже известно, без обращения к сети
+  --quiet       только уведомление, ничего не печатать (для таймера)
+  --list        напечатать полный список пакетов
+  --reset       забыть состояние: следующая проверка сообщит обо всём заново
+  -h, --help    эта справка
+EOF
+}
+
+die() { printf '%snyx-updates:%s %s\n' "$c_warn" "$c_reset" "$*" >&2; exit 1; }
+
+# --------------------------------------------------------------------------
+# Collect the pending set. Each line is "name oldver -> newver".
+collect_system() {
+    local out
+    if ! out=$(checkupdates 2>/dev/null); then
+        return 1
+    fi
+    printf '%s\n' "$out" | sed '/^[[:space:]]*$/d'
+}
+
+# Map "name ->" lines to their repository, in a single pacman call.
+# AUR lines never appear here, so everything from checkupdates is official.
+repo_of() {
+    local names=()
+    while read -r name _; do
+        [[ -n "$name" ]] && names+=("$name")
+    done < <(cat)
+    (( ${#names[@]} == 0 )) && return 0
+    pacman -Si -- "${names[@]}" 2>/dev/null | awk '
+        /^Name[ ]*:/       { n = $0; sub(/^[^:]*:[ ]*/, "", n) }
+        /^Repository[ ]*:/ { r = $0; sub(/^[^:]*:[ ]*/, "", r); print n "\t" r }
+    '
+}
+
+collect_aur() {
+    local helper
+    for helper in paru yay; do
+        if command -v "$helper" >/dev/null 2>&1; then
+            "$helper" -Qu --aur --color=never 2>/dev/null | sed '/^[[:space:]]*$/d' | sed 's/$/\taur/'
+            return 0
+        fi
+    done
+    return 0
+}
+
+# --------------------------------------------------------------------------
+main() {
+    local mode=report list=0 reset=0
+    case "${1:-}" in
+        --status) mode=status ;;
+        --quiet)  mode=quiet ;;
+        --list)   mode=report; list=1 ;;
+        --reset)  mode=reset ;;
+        -h|--help) usage; return 0 ;;
+        '')       mode=report ;;
+        *) die "неизвестная опция: $1 (см. --help)" ;;
+    esac
+    shift || true
+
+    command -v checkupdates >/dev/null 2>&1 \
+        || die "нужен checkupdates: установи пакет pacman-contrib"
+
+    mkdir -p "$STATE_DIR"
+    chmod 0700 "$STATE_DIR"
+
+    if (( reset )); then
+        rm -f "$STATE_FILE"
+        [[ $mode == report ]] && printf '%sсостояние сброшено%s\n' "$c_dim" "$c_reset"
+        return 0
+    fi
+
+    local updates=() repo_map=() aur=()
+
+    if [[ $mode == status ]]; then
+        # No network: replay what the last real check produced.
+        if [[ -s "$STATE_FILE" ]]; then
+            while IFS=$'\t' read -r line _; do
+                [[ -n "$line" ]] && updates+=("$line")
+            done <"$STATE_FILE"
+        else
+            [[ $mode == report ]] && printf '%sпроверка ещё не выполнялась%s\n' "$c_dim" "$c_reset"
+            return 0
+        fi
+    else
+        local raw
+        if ! raw=$(collect_system); then
+            die "не удалось получить список обновлений (проверь сеть и зеркала)"
+        fi
+        [[ -n "$raw" ]] || raw=""
+
+        if [[ -n "$raw" ]]; then
+            mapfile -t updates < <(printf '%s\n' "$raw")
+            mapfile -t repo_map < <(printf '%s\n' "$raw" | repo_of)
+        fi
+        mapfile -t aur < <(collect_aur)
+
+        # Persist the full set as the new baseline.
+        {
+            for i in "${!updates[@]}"; do
+                printf '%s\t%s\n' "${updates[$i]}" "${repo_map[$i]:-core}"
+            done
+            for line in "${aur[@]}"; do
+                printf '%s\t%s\n' "$line" aur
+            done
+        } | sort -u >"$STATE_FILE.new"
+        mv -f "$STATE_FILE.new" "$STATE_FILE"
+    fi
+
+    # Join updates with their repositories.
+    local -i arch_n=0 cachy_n=0 aur_n=0 kernel_n=0
+    local -a arch_list=() cachy_list=() aur_list=() kernel_list=()
+    for i in "${!updates[@]}"; do
+        # AUR lines arrive in their own array, so everything in "updates" here
+        # is an official repository package and gets classified by repo name.
+        local line="${updates[$i]}" repo="${repo_map[$i]:-core}" name="${updates[$i]%% *}"
+        if [[ $repo =~ $CACHYOS_RE ]]; then
+            (( cachy_n++ )); cachy_list+=("$line")
+        else
+            (( arch_n++ )); arch_list+=("$line")
+        fi
+        if [[ "$name" =~ $KERNEL_RE ]]; then
+            (( kernel_n++ )); kernel_list+=("$line")
+        fi
+    done
+    for line in "${aur[@]}"; do
+        (( aur_n++ )); aur_list+=("$line")
+    done
+
+    local -i total=$(( arch_n + cachy_n + aur_n ))
+
+    # ----------------------------------------------------------------------
+    # Terminal report
+    # ----------------------------------------------------------------------
+    if [[ $mode == report ]]; then
+        if (( total == 0 )); then
+            printf '%s✓ система обновлена%s\n' "$c_ok" "$c_reset"
+            return 0
+        fi
+        printf '%sДоступно обновлений: %d%s\n\n' "$c_reset" "$total" "$c_reset"
+
+        if (( arch_n )); then
+            printf '%sArch%s (%d)\n' "$c_arch" "$c_reset" "$arch_n"
+            (( list )) && printf '  %s\n' "${arch_list[@]}" | head -n "$MAX_LIST" \
+                        || printf '  %sиз них: %s\n' "$c_dim" "${arch_list[0]%% *}"
+        fi
+        if (( cachy_n )); then
+            printf '\n%sCachyOS%s (%d)\n' "$c_cachy" "$c_reset" "$cachy_n"
+            (( list )) && printf '  %s\n' "${cachy_list[@]}" | head -n "$MAX_LIST" \
+                        || printf '  %sиз них: %s\n' "$c_dim" "${cachy_list[0]%% *}"
+        fi
+        if (( aur_n )); then
+            printf '\n%sAUR%s (%d) %s— ставится paru/yay вручную%s\n' \
+                "$c_aur" "$c_reset" "$aur_n" "$c_dim" "$c_reset"
+            (( list )) && printf '  %s\n' "${aur_list[@]}" | head -n "$MAX_LIST" \
+                        || printf '  %sиз них: %s\n' "$c_dim" "${aur_list[0]%% *}"
+        fi
+
+        if (( kernel_n )); then
+            printf '\n%s⚠ ядро обновляется — нужна перезагрузка%s\n' "$c_kernel" "$c_reset"
+            printf '  %s\n' "${kernel_list[@]}"
+        fi
+        printf '\n%sустановить:%s sudo pacman -Syu\n' "$c_dim" "$c_reset"
+        if (( ! list )); then
+            printf '%sполный список:%s nyx-updates --list\n' "$c_dim" "$c_reset"
+        fi
+    fi
+
+    # ----------------------------------------------------------------------
+    # Notification: only when something is pending.
+    # ----------------------------------------------------------------------
+    if [[ $mode != status ]] && command -v notify-send >/dev/null 2>&1 && (( total > 0 )); then
+        local body="Arch: ${arch_n}  ·  CachyOS: ${cachy_n}  ·  AUR: ${aur_n}"
+        if (( kernel_n )); then
+            body+=$'\nЯдро обновляется — нужна перезагрузка'
+        fi
+        local urgency=normal
+        (( kernel_n )) && urgency=critical
+        notify-send \
+            --app-name="Nyx Updates" \
+            --icon="system-software-update" \
+            --urgency="$urgency" \
+            "Доступно $total обновлений" \
+            "$body" >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+main "$@"

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Nyx default wallpaper
+Comment=Applies the Nyx desktop background once, on first login
+Exec=/usr/local/bin/nyx-apply-wallpaper
+Terminal=false
+NoDisplay=true
+X-KDE-autostart-after=panel

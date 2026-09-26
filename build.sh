@@ -196,10 +196,12 @@ install -Dm0644 "$SRC/config/live-pacman.conf" "$BASE_ROOTFS/etc/pacman.conf"
 install -Dm0644 "$SRC/config/locale.gen" "$BASE_ROOTFS/etc/locale.gen"
 cp -a "$SRC/config/base-rootfs-overlay/." "$BASE_ROOTFS/"
 # The overlay comes from a Windows working copy, so force sane permissions.
-for helper in update-arch-limine nyx-configure-bootloader update-nyx-os-release; do
+for helper in update-arch-limine nyx-configure-bootloader update-nyx-os-release nyx-updates; do
     install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/$helper" \
         "$BASE_ROOTFS/usr/local/sbin/$helper"
 done
+install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/bin/nyx-apply-wallpaper" \
+    "$BASE_ROOTFS/usr/local/bin/nyx-apply-wallpaper"
 install -Dm0644 "$SRC/config/base-rootfs-overlay/etc/pacman.d/mirrorlist" \
     "$BASE_ROOTFS/etc/pacman.d/mirrorlist"
 install -Dm0644 "$SRC/config/base-rootfs-overlay/etc/pacman.d/hooks/99-arch-limine.hook" \
@@ -208,10 +210,35 @@ install -Dm0644 "$SRC/config/base-rootfs-overlay/etc/pacman.d/hooks/99-nyx-os-re
     "$BASE_ROOTFS/etc/pacman.d/hooks/99-nyx-os-release.hook"
 install -Dm0644 "$SRC/config/limine-bg.png" \
     "$BASE_ROOTFS/usr/share/arch-custom/limine-bg.png"
+
+# Desktop background for the installed system. The image goes to the canonical
+# /usr/share/backgrounds path, and a Plasma wallpaper package makes it show up
+# in the wallpaper chooser by name. Setting it as the default is done by
+# /usr/local/bin/nyx-apply-wallpaper on first login rather than by seeding
+# plasma-org.kde.plasma.desktop-appletsrc, which is version-specific.
+install -Dm0644 "$SRC/config/nyx-wallpaper.jpg" \
+    "$BASE_ROOTFS/usr/share/backgrounds/nyx.jpg"
+install -d -m 0755 "$BASE_ROOTFS/usr/share/wallpapers/nyx"
+install -Dm0644 "$SRC/config/wallpaper-metadata.json" \
+    "$BASE_ROOTFS/usr/share/wallpapers/nyx/metadata.json"
+install -Dm0644 "$SRC/config/nyx-wallpaper.jpg" \
+    "$BASE_ROOTFS/usr/share/wallpapers/nyx/contents.jpg"
 install -d -m 0755 "$BASE_ROOTFS/etc/skel/.config/fastfetch"
 cp -a "$SRC/config/fastfetch/." "$BASE_ROOTFS/etc/skel/.config/fastfetch/"
 install -m 0644 "$SRC/config/fastfetch/nyarch.jsonc" \
     "$BASE_ROOTFS/etc/skel/.config/fastfetch/config.jsonc"
+
+# The default fastfetch preset starts with the "title" module, which prints
+# user@host. Calamares' hostname module is in SKIP_MODULES, so nothing sets the
+# name on the installed system and it would keep the base default of "localhost".
+printf 'nyx\n' >"$BASE_ROOTFS/etc/hostname"
+chmod 0644 "$BASE_ROOTFS/etc/hostname"
+
+# Enable the update reporter for every desktop session. It is a *user* timer
+# because notify-send has to reach the running graphical session, and enabling
+# it globally avoids depending on anything running at install time.
+systemctl --root="$BASE_ROOTFS" --global enable nyx-updates.timer >/dev/null 2>&1 \
+    || die "failed to enable the nyx-updates user timer in the target rootfs."
 
 # Calamares executes pacman in a chroot where systemd-resolved is not running.
 # Use temporary public resolvers during installation; the shell process restores
@@ -259,6 +286,22 @@ cp -a "$ARCHISO_SRC/configs/releng/." "$PROFILE/"
 [[ -d "$AIROOTFS" ]] || die "archiso releng profile layout is unexpected: $AIROOTFS is missing."
 [[ -d "$PROFILE/efiboot" ]] || die "archiso releng profile layout is unexpected: $PROFILE/efiboot is missing."
 install -m 0644 "$SRC/config/packages.live.x86_64" "$PROFILE/packages.x86_64"
+
+# releng's systemd-boot entries are titled "Arch Linux install medium", which is
+# the first thing anyone sees on the machine. Retitle them for Nyx Linux. Only
+# the title changes: the options lines carry archisosearchuuid and the other
+# archiso parameters, and those must stay untouched.
+for entry in "$PROFILE"/efiboot/loader/entries/*.conf; do
+    [[ -f "$entry" ]] || continue
+    case "$(basename "$entry")" in
+        01-*) sed -i 's|^title .*|title    Nyx Linux (x86_64, UEFI)|'                  "$entry" ;;
+        02-*) sed -i 's|^title .*|title    Nyx Linux (x86_64, UEFI) with speech|'       "$entry" ;;
+        03-*) sed -i 's|^title .*|title    Memtest86+ (memory test)|'                   "$entry" ;;
+    esac
+done
+if grep -rqs '^title .*Arch Linux' "$PROFILE/efiboot/loader/entries/"; then
+    die "an ISO boot entry still advertises 'Arch Linux' in its title."
+fi
 
 cat >"$PROFILE/profiledef.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -475,13 +518,21 @@ for required in \
     'usr/bin/pacman' \
     'usr/local/sbin/update-arch-limine' \
     'usr/local/sbin/nyx-configure-bootloader' \
+    'usr/local/sbin/nyx-updates' \
+    'usr/local/bin/nyx-apply-wallpaper' \
+    'usr/lib/systemd/user/nyx-updates.service' \
+    'usr/lib/systemd/user/nyx-updates.timer' \
+    'etc/systemd/user/timers.target.wants/nyx-updates.timer' \
+    'usr/share/backgrounds/nyx.jpg' \
+    'usr/share/wallpapers/nyx/metadata.json' \
+    'usr/share/wallpapers/nyx/contents.jpg' \
+    'etc/skel/.config/autostart/nyx-wallpaper.desktop' \
     'etc/pacman.d/mirrorlist' \
     'etc/skel/.config/fastfetch/config.jsonc' \
     'etc/skel/.config/fastfetch/arch.jsonc' \
-    'etc/skel/.config/fastfetch/giyupeacemaker.jsonc' \
-    'etc/skel/.config/fastfetch/peace.ascii' \
     'etc/skel/.config/fastfetch/nyarch.ascii' \
     'etc/skel/.config/fastfetch/nyarch.jsonc' \
+    'etc/hostname' \
     'usr/share/arch-custom/nyx-os-release'
 do
     grep -F -- "$required" "$base_listing" >/dev/null || die "Missing from the target rootfs: $required"

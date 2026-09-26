@@ -1,0 +1,14 @@
+{
+    "KPlugin": {
+        "Id": "nyx",
+        "Name": "Nyx",
+        "Description": "Nyx Linux default desktop background",
+        "License": "CC-BY-SA-4.0",
+        "Form": [
+            "Wallpaper"
+        ]
+    },
+    "X-KDE-PythonEngine2": {
+        "Script": ""
+    }
+}

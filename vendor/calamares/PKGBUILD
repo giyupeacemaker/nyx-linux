@@ -84,7 +84,12 @@ build() {
     -DINSTALL_CONFIG=ON \
     -DBUILD_TESTING=OFF \
     -DBUILD_SCHEMA_TESTING=OFF \
-    -DUSE_services=services-systemd \
+    # Calamares splits a module name at the FIRST hyphen: for
+    # "services-systemd" the category is "services" and the implementation is
+    # "systemd". USE_services is therefore compared against "systemd", not
+    # against the full module name. Passing the full name made every
+    # services-* module get skipped and the installer refused to start.
+    -DUSE_services=systemd \
     -DSKIP_MODULES="${skip_modules[*]}"
   cmake --build build
 }

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Set the Nyx wallpaper as this user's Plasma desktop background, once.
+#
+# Shipped as a first-login autostart from /etc/skel rather than by writing a
+# plasma-org.kde.plasma.desktop-appletsrc into the skeleton: that file is large
+# and version-specific, and a stale copy would fight whatever Plasma writes
+# later. A marker in the user's state directory keeps this to a single run.
+set -uo pipefail
+
+readonly IMAGE=/usr/share/backgrounds/nyx.jpg
+
+marker="${XDG_STATE_HOME:-$HOME/.local/state}/nyx-wallpaper-applied"
+[[ -e "$marker" ]] && exit 0
+[[ -f "$IMAGE" ]] || exit 0
+
+# Autostart fires around the same time Plasma finishes starting its activities,
+# and plasma-evaluate is unavailable before that, so wait a little for it.
+for _ in $(seq 1 30); do
+    command -v plasma-evaluate >/dev/null 2>&1 && break
+    sleep 1
+done
+command -v plasma-evaluate >/dev/null 2>&1 || exit 0
+
+plasma-evaluate "
+var d = desktops();
+d[0].wallpaperPlugin = 'org.kde.image';
+d[0].currentConfigGroup = Array('Wallpaper', 'org.kde.image', 'General');
+d[0].writeConfig('Image', 'file://$IMAGE');
+" >/dev/null 2>&1
+
+mkdir -p -- "$(dirname -- "$marker")"
+: >"$marker"
