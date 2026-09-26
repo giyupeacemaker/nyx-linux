@@ -196,12 +196,14 @@ install -Dm0644 "$SRC/config/live-pacman.conf" "$BASE_ROOTFS/etc/pacman.conf"
 install -Dm0644 "$SRC/config/locale.gen" "$BASE_ROOTFS/etc/locale.gen"
 cp -a "$SRC/config/base-rootfs-overlay/." "$BASE_ROOTFS/"
 # The overlay comes from a Windows working copy, so force sane permissions.
-for helper in update-arch-limine nyx-configure-bootloader update-nyx-os-release nyx-updates; do
+for helper in update-arch-limine nyx-configure-bootloader update-nyx-os-release nyx-updates nyx-rollback; do
     install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/$helper" \
         "$BASE_ROOTFS/usr/local/sbin/$helper"
 done
 install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/bin/nyx-apply-wallpaper" \
     "$BASE_ROOTFS/usr/local/bin/nyx-apply-wallpaper"
+install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/nyx-rollback" \
+    "$BASE_ROOTFS/usr/local/sbin/nyx-rollback"
 install -Dm0644 "$SRC/config/base-rootfs-overlay/etc/pacman.d/mirrorlist" \
     "$BASE_ROOTFS/etc/pacman.d/mirrorlist"
 install -Dm0644 "$SRC/config/base-rootfs-overlay/etc/pacman.d/hooks/99-arch-limine.hook" \
@@ -519,6 +521,7 @@ for required in \
     'usr/local/sbin/update-arch-limine' \
     'usr/local/sbin/nyx-configure-bootloader' \
     'usr/local/sbin/nyx-updates' \
+    'usr/local/sbin/nyx-rollback' \
     'usr/local/bin/nyx-apply-wallpaper' \
     'usr/lib/systemd/user/nyx-updates.service' \
     'usr/lib/systemd/user/nyx-updates.timer' \

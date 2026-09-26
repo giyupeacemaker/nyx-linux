@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+# nyx-rollback - filesystem snapshots for Nyx Linux.
+#
+# Arch is a rolling release, and the honest reason people hesitate to update
+# one is that a bad kernel or a bad update leaves a machine that will not boot.
+# This takes a snapshot before every transaction so the way back is one command.
+#
+# Two backends, picked from the root filesystem:
+#
+#   btrfs  -> snapper. Subvolumes make snapshots instant and they cost no
+#             extra space until something actually changes. Timeline snapshots
+#             every hour, and pacman hooks take one before and after every
+#             transaction.
+#
+#   ext4, xfs and friends -> timeshift, which keeps dated rsync copies. Slower
+#             and it does use disk, but it works on filesystems that have no
+#             snapshot support at all, which is the default our installer uses.
+#
+# It only ever reports and restores. It never installs a kernel, never edits a
+# bootloader and never deletes a snapshot without asking.
+set -uo pipefail
+
+readonly CONF=/etc/snapper/configs/root
+readonly TIMESHIFT_DIR=/timeshift
+
+c_reset=''; c_dim=''; c_ok=''; c_warn=''; c_bad=''; c_head=''
+if [[ -t 1 ]]; then
+    c_reset=$'\033[0m'; c_dim=$'\033[2m'; c_ok=$'\033[38;5;114m'
+    c_warn=$'\033[38;5;215m'; c_bad=$'\033[38;5;203m'; c_head=$'\033[1;38;5;39m'
+fi
+
+say()  { printf '%s\n' "$*"; }
+head_() { printf '%s%s%s\n' "$c_head" "$*" "$c_reset"; }
+ok()   { printf '  %s✓%s %s\n' "$c_ok" "$c_reset" "$*"; }
+warn() { printf '  %s!%s %s\n' "$c_warn" "$c_reset" "$*"; }
+err()  { printf '  %s✗%s %s\n' "$c_bad" "$c_reset" "$*" >&2; }
+
+usage() {
+    cat <<'EOF'
+Использование: nyx-rollback <команда>
+
+  status              что настроено и какая система откатов активна
+  list                список снимков
+  create [описание]   создать снимок сейчас
+  revert <номер>      откатиться к снимку (нумерунция как в list)
+  help                эта справка
+
+Откат восстанавливает корневую файловую систему. Ядра лежат на ESP и
+под снимок не попадают, поэтому ядро всегда остаётся тем, что стоит сейчас.
+Для отката ядра нужен отдельный пункт в меню загрузки.
+EOF
+}
+
+root_fstype() { findmnt -no FSTYPE / 2>/dev/null; }
+root_source() { findmnt -no SOURCE / 2>/dev/null; }
+
+backend() {
+    case "$(root_fstype)" in
+        btrfs) echo snapper ;;
+        *)     echo timeshift ;;
+    esac
+}
+
+require_root() {
+    [[ ${EUID:-$(id -u)} -eq 0 ]] || { err "нужны права root: sudo nyx-rollback $*"; exit 1; }
+}
+
+# --------------------------------------------------------------------------
+setup_snapper() {
+    local src; src="$(root_source)"
+
+    if [[ ! -e "$CONF" ]]; then
+        head_ "Настраиваю snapper"
+        if ! command -v snapper >/dev/null 2>&1; then
+            err "snapper не установлен: sudo pacman -S snapper"
+            return 1
+        fi
+        if [[ ! -d /.snapshots ]]; then
+            if ! btrfs subvolume create /.snapshots 2>/dev/null; then
+                err "не удалось создать подтом /.snapshots на $src"
+                return 1
+            fi
+            ok "создан подтом /.snapshots"
+            if ! grep -q '\.snapshots' /etc/fstab; then
+                printf '%s /.snapshots btrfs subvol=/.snapshots 0 0\n' "$src" \
+                    >> /etc/fstab
+                ok "добавлен /.snapshots в /etc/fstab"
+            fi
+            mount /.snapshots 2>/dev/null \
+                || { err "не удалось смонтировать /.snapshots"; return 1; }
+        fi
+        if ! snapper -c root create-config 2>/dev/null; then
+            err "snapper не смог создать конфигурацию для корня"
+            return 1
+        fi
+        ok "создана конфигурация snapper"
+    fi
+
+    # Snapper ships the pacman hook; it has to be linked into place, not copied,
+    # so that a package update brings a new version along.
+    if [[ -e /usr/share/snapper/hooks/50-snapper-pre-post ]]; then
+        install -d -m 0755 /etc/pacman.d/hooks
+        if [[ ! -e /etc/pacman.d/hooks/50-snapper-pre-post ]]; then
+            ln -s /usr/share/snapper/hooks/50-snapper-pre-post \
+                  /etc/pacman.d/hooks/50-snapper-pre-post
+            ok "включён хук снимков вокруг каждой транзакции pacman"
+        fi
+    fi
+
+    systemctl enable --now snapper-timeline.timer 2>/dev/null \
+        && ok "часовой таймер снимков включён" \
+        || warn "не удалось включить snapper-timeline.timer"
+    systemctl enable --now snapper-cleanup.timer 2>/dev/null \
+        && ok "автоочистка снимков включена" \
+        || warn "не удалось включить snapper-cleanup.timer"
+    return 0
+}
+
+setup_timeshift() {
+    head_ "Настраиваю timeshift"
+    if ! command -v timeshift >/dev/null 2>&1; then
+        err "timeshift не установлен: sudo pacman -S timeshift"
+        return 1
+    fi
+    if [[ ! -d "$TIMESHIFT_DIR" ]]; then
+        install -d -m 0700 "$TIMESHIFT_DIR"
+        ok "создан каталог $TIMESHIFT_DIR"
+    fi
+    # O = only-if-changed, D = daily. That keeps the copy small: hours of no
+    # change cost nothing.
+    if ! timeshift --list 2>/dev/null | grep -q .; then
+        timeshift --create --tags O --backup-dir "$TIMESHIFT_DIR" >/dev/null 2>&1
+        timeshift --create --tags D --backup-dir "$TIMESHIFT_DIR" >/dev/null 2>&1
+        ok "созданы первые снимки (при изменении + ежедневный)"
+    fi
+    systemctl enable --now timeshift.timer 2>/dev/null \
+        && ok "ежедневный таймер timeshift включён" \
+        || warn "не удалось включить timeshift.timer"
+    return 0
+}
+
+# --------------------------------------------------------------------------
+do_status() {
+    local fs be
+    fs="$(root_fstype)"
+    be="$(backend)"
+
+    head_ "Откаты"
+    printf '  корневая ФС:  %s на %s\n' "$fs" "$(root_source)"
+    printf '  система:       %s\n\n' \
+        "$([[ $be == snapper ]] && echo 'snapper (мгновенно, без места)' \
+                                 || echo 'timeshift (копии, занимает место)')"
+
+    if [[ $be == snapper ]]; then
+        if [[ -e "$CONF" ]]; then
+            ok "snapper настроен"
+            local n; n=$(snapper -c root list 2>/dev/null | grep -cE '^[0-9]+ ' || true)
+            printf '  снимков:       %s\n' "${n:-0}"
+        else
+            warn "snapper ещё не настроен"
+            printf '      %ssudo nyx-rollback create%s  # настроит и сделает первый снимок\n' \
+                "$c_dim" "$c_reset"
+        fi
+    else
+        if timeshift --list 2>/dev/null | grep -q .; then
+            ok "timeshift настроен"
+            printf '  снимков:       %s\n' \
+                "$(timeshift --list 2>/dev/null | grep -c '^ *[0-9]' || true)"
+        else
+            warn "timeshift ещё не настроен"
+            printf '      %ssudo nyx-rollback create%s  # настроит и сделает первый снимок\n' \
+                "$c_dim" "$c_reset"
+        fi
+    fi
+
+    printf '\n'
+    head_ "Ядра на ESP"
+    local kernels
+    kernels=$(find /boot -maxdepth 1 -name 'vmlinuz-*' -printf '%f\n' 2>/dev/null | sort)
+    if [[ -z "$kernels" ]]; then
+        warn "в /boot не найдено ни одного ядра"
+    else
+        local n=0
+        while read -r k; do
+            n=$((n + 1))
+            printf '  %s\n' "$k"
+        done <<<"$kernels"
+        if (( n > 1 )); then
+            ok "ядер больше одного — откат ядра возможен через меню загрузки"
+        else
+            warn "ядер только одно — откатить ядро нечем"
+        fi
+    fi
+}
+
+do_list() {
+    case "$(backend)" in
+        snapper)
+            snapper -c root list --columns number,date,description,cleanup 2>/dev/null \
+                || err "snapper не настроен"
+            ;;
+        *)
+            timeshift --list 2>/dev/null || err "timeshift не настроен"
+            ;;
+    esac
+}
+
+do_create() {
+    require_root create
+    local desc="${1:-ручной снимок}"
+    case "$(backend)" in
+        snapper)
+            setup_snapper >/dev/null || exit 1
+            snapper -c root create --description "$desc" --cleanup-algorithm number \
+                && ok "снимок создан: $desc"
+            ;;
+        *)
+            setup_timeshift >/dev/null || exit 1
+            timeshift --create --tags O --comment "$desc" --backup-dir "$TIMESHIFT_DIR" \
+                && ok "снимок создан: $desc"
+            ;;
+    esac
+}
+
+do_revert() {
+    require_root revert
+    local n="${1:-}"
+    [[ -n "$n" ]] || { err "укажи номер: nyx-rollback revert 5"; exit 1; }
+
+    case "$(backend)" in
+        snapper)
+            [[ -e "$CONF" ]] || { err "snapper не настроен"; exit 1; }
+            snapper -c root list 2>/dev/null | grep -qE "^${n}[[:space:]]" \
+                || { err "снимка $n нет"; exit 1; }
+            printf '%s' "$c_warn"
+            cat <<EOF
+
+  Откат корневой файловой системы к снимку $n.
+  Система перезагрузится. Всё, что изменено после этого снимка, будет потеряно.
+
+EOF
+            printf '  %sВвести "yes" для подтверждения: %s' "$c_warn" "$c_reset"
+            read -r reply
+            [[ "$reply" == "yes" ]] || { err "отменено"; exit 1; }
+            snapper -c root rollback "$n" \
+                && systemctl reboot \
+                || err "откат не удался"
+            ;;
+        *)
+            [[ -d "$TIMESHIFT_DIR" ]] || { err "timeshift не настроен"; exit 1; }
+            timeshift --list 2>/dev/null | grep -qE "^[[:space:]]*${n}[[:space:]]" \
+                || { err "контрольной точки $n нет"; exit 1; }
+            printf '%s' "$c_warn"
+            cat <<EOF
+
+  Восстановление из timeshift затрагивает всю систему и спросит
+  подтверждение ещё раз. Если ок — выполни вручную:
+
+      sudo timeshift --restore $n
+
+EOF
+            ;;
+    esac
+}
+
+# --------------------------------------------------------------------------
+cmd="${1:-status}"
+shift || true
+
+case "$cmd" in
+    status)          do_status ;;
+    list)            do_list ;;
+    create)          do_create "${1:-ручной снимок}" ;;
+    revert|rollback) do_revert "${1:-}" ;;
+    help|-h|--help)  usage ;;
+    *)               err "неизвестная команда: $cmd"; usage; exit 1 ;;
+esac

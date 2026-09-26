@@ -688,6 +688,57 @@ else
 fi
 
 # --------------------------------------------------------------------------
+sect "Snapshot rollback"
+# nyx-rollback promises a way back after a bad transaction. Both backends it can
+# use have to be present in the target system, or the promise is empty.
+if [[ -f config/base-rootfs-overlay/usr/local/sbin/nyx-rollback ]]; then
+    ok "nyx-rollback present"
+    if bash -n config/base-rootfs-overlay/usr/local/sbin/nyx-rollback 2>/dev/null; then
+        ok "nyx-rollback passes a bash syntax check"
+    else
+        bad "nyx-rollback has a syntax error"
+    fi
+    for be in snapper timeshift; do
+        if grep -q "$be" config/base-rootfs-overlay/usr/local/sbin/nyx-rollback; then
+            ok "nyx-rollback knows the $be backend"
+        else
+            bad "nyx-rollback has no $be backend"
+        fi
+    done
+    if grep -q 'btrfs' config/base-rootfs-overlay/usr/local/sbin/nyx-rollback; then
+        ok "nyx-rollback picks a backend from the root filesystem"
+    else
+        bad "nyx-rollback does not detect the root filesystem type"
+    fi
+    # Anchor on command position: the script may *print* "sudo pacman -S
+    # snapper" as installation advice, which is not the same as running it.
+    if grep -qE '(^|[;&|]|&&)[[:space:]]*(sudo[[:space:]]+)?pacman[[:space:]]+-S' \
+        config/base-rootfs-overlay/usr/local/sbin/nyx-rollback; then
+        bad "nyx-rollback runs a package transaction; it must only report and restore"
+    else
+        ok "nyx-rollback never installs packages on its own"
+    fi
+else
+    bad "nyx-rollback is missing"
+fi
+# Both snapshot backends must be installable. ext4 is the installer's default
+# root filesystem and has no snapshot support, and btrfs is offered as an option.
+for p in snapper timeshift; do
+    if grep -qE "^[[:space:]]*-[[:space:]]*${p}[[:space:]]*$" config/calamares/modules/packages.conf; then
+        ok "$p is installed into the target system"
+    else
+        bad "$p is not installed; nyx-rollback would have no backend"
+    fi
+done
+# btrfs is listed inside availableFileSystemTypes: [ ext4, btrfs ], so look for
+# the bare word rather than for a line of its own.
+if grep -q '\bbtrfs\b' config/calamares/modules/partition.conf; then
+    ok "installer offers btrfs, which nyx-rollback prefers"
+else
+    warn "installer does not offer btrfs; only the timeshift path will work"
+fi
+
+# --------------------------------------------------------------------------
 printf '\n\033[1mChecks passed: %d, failed: %d\033[0m\n' "$PASS" "$FAIL"
 (( FAIL == 0 )) || exit 1
 printf '\033[1;32mAll static checks passed.\033[0m\n'
