@@ -312,11 +312,17 @@ done
 # keys,keys,2,2,total,trusted,trusted", where the 2,2 came from awk's $2.
 install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/nyx-prepare-keyring" \
     "$BASE_ROOTFS/usr/local/sbin/nyx-prepare-keyring"
-# The keyring step of the installer is a one-line shellprocess module that calls
-# this script. The logic cannot live in the module itself: shellprocess treats
-# every dollar sign in the command string as a variable to substitute, and the
-# first version died at install time with "Missing variables are:
-# keys,keys,2,2,total,trusted,trusted", where the 2,2 came from awk's $2.
+# The display manager step is a one-line shellprocess module calling this
+# script, for the same reason as the keyring one: the logic has a loop, a
+# conditional and a fallback in it, and none of that survives shellprocess
+# substituting every dollar sign in the command string. What it is for is
+# documented in the script.
+install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/nyx-enable-display-manager" \
+    "$BASE_ROOTFS/usr/local/sbin/nyx-enable-display-manager"
+# nyx-update-git appends the freshly built nyx-tools to /var/cache/nyx-repo after
+# the install has populated it, so the installed system can upgrade the helper
+# tools like any other package instead of only carrying the version it was
+# installed with.
 install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/nyx-update-git" \
     "$BASE_ROOTFS/usr/local/sbin/nyx-update-git"
 # The kernel command line helper. Both bootloader writers refuse to run without

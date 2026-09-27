@@ -1634,6 +1634,53 @@ if [[ -f "$SETTINGS" ]]; then
             else
                 bad "the shared pacman.conf was tightened; the build host has no CachyOS key and the build will fail"
             fi
+            # A finished installation booted to a text console because sddm was
+            # never enabled. The installer should not depend on its own
+            # displaymanager module having got that right, so a step enables
+            # whichever manager is actually installed.
+            DM_CONF=config/calamares/modules/shellprocess-displaymanager.conf
+            DM_SCRIPT=config/base-rootfs-overlay/usr/local/sbin/nyx-enable-display-manager
+            if [[ -f "$DM_CONF" && -f "$DM_SCRIPT" ]]; then
+                ok "the display manager step exists"
+                if grep -vE '^[[:space:]]*#' "$DM_CONF" | grep -q '\$'; then
+                    bad "a command in the display manager module has a dollar sign; shellprocess will treat it as a variable"
+                else
+                    ok "no command in the display manager module has a dollar sign to substitute"
+                fi
+                if grep -q 'command: "nyx-enable-display-manager"' "$DM_CONF"; then
+                    ok "the display manager module calls nyx-enable-display-manager"
+                else
+                    bad "the display manager module does not call nyx-enable-display-manager"
+                fi
+                if grep -qE 'install -Dm0755 .*nyx-enable-display-manager' build.sh; then
+                    ok "build.sh installs nyx-enable-display-manager into the target"
+                else
+                    bad "build.sh does not install nyx-enable-display-manager, so the module cannot run it"
+                fi
+                # Worthless in the wrong place: before packages there are no unit
+                # files to find, because the desktop is not installed yet.
+                i_dm=$(printf '%s\n' "$exec_seq" | grep -nx 'shellprocess@displaymanager' | cut -d: -f1)
+                i_dmp=$(printf '%s\n' "$exec_seq" | grep -nx 'packages' | cut -d: -f1)
+                if [[ -n "$i_dm" && -n "$i_dmp" ]] && (( i_dm > i_dmp )); then
+                    ok "exec order: the display manager step ($i_dm) runs after packages ($i_dmp)"
+                else
+                    bad "the display manager step must run after packages, or the desktop's unit files are not there yet"
+                fi
+            else
+                bad "no display manager step: a finished install can boot to a text console with no login screen"
+            fi
+            # The install log is the only record of what the installation did,
+            # and umount before finished is what kept it out of the target.
+            if printf '%s\n' "$exec_seq" | grep -qx 'umount'; then
+                bad "umount runs before the finished module, so the install log cannot be written into the target"
+            else
+                ok "umount is not in the exec sequence, so the install log can be kept"
+            fi
+            if grep -q 'copyInstallationLog: true' config/calamares/modules/finished.conf; then
+                ok "the finished module is told to keep the install log"
+            else
+                bad "finished.conf does not ask for the install log, so the installed system has no record of its installation"
+            fi
             # A step that cannot tell success from failure is not a step.
             if grep -q 'count_trusted' "$KEYRING_SCRIPT" && \
                grep -qE '^\s*if \[ "\$trusted" -gt 0 \]' "$KEYRING_SCRIPT"; then

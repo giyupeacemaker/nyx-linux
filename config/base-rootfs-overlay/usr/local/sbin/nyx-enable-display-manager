@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Enable the display manager that the chosen desktop actually installed.
+#
+# The displaymanager module in Calamares did not enable anything on the tested
+# image: after a completed installation, sddm was "disabled; preset: disabled"
+# and its journal was empty, so it had never run. The system booted to a text
+# console on tty1, which is not a usable desktop. Nothing in the log explained
+# why, and the install log was not kept either, so this step does not rely on
+# that module having worked.
+#
+# It reads the systemd unit files instead. A manager that is not installed has
+# no unit file, so this cannot be wrong in the way a setting can: it looks at
+# what is on disk rather than at what the installer recorded. It also prints
+# what it found, so a future failure explains itself in the install log rather
+# than showing up as a silent boot to a terminal.
+#
+# This lives in a file rather than inline in the Calamares module because
+# shellprocess substitutes variables in the command string and treats every
+# dollar sign as one.
+set -uo pipefail
+
+log() { printf 'nyx-enable-display-manager: %s\n' "$*"; }
+
+# The order matches the displaymanagers list in displaymanager.conf, so if more
+# than one is ever installed the log names the one that would have won.
+CANDIDATES="sddm lightdm gdm lxdm slim"
+
+found=""
+for dm in $CANDIDATES; do
+    if [ -e "/usr/lib/systemd/system/$dm.service" ]; then
+        if [ -n "$found" ]; then
+            log "more than one display manager is installed: $found and $dm"
+            log "leaving the choice alone rather than picking one for you"
+            exit 0
+        fi
+        found="$dm"
+    fi
+done
+
+if [ -z "$found" ]; then
+    log "no display manager is installed, nothing to enable"
+    log "the system will boot to a text console, which is expected if the"
+    log "chosen desktop does not install one"
+    exit 0
+fi
+
+log "found $found installed, enabling it"
+
+if systemctl enable "$found.service" >/dev/null 2>&1 && \
+   systemctl is-enabled "$found.service" >/dev/null 2>&1; then
+    log "$found is enabled, the system will reach a graphical login"
+    exit 0
+fi
+
+# systemctl can refuse inside a chroot, where there is no running systemd to
+# talk to. Enabling is only a symlink, so do it directly rather than leaving the
+# system without a display manager because of a bus that does not exist yet.
+log "systemctl would not enable it here, linking the unit directly"
+if [ -e /etc/systemd/system/display-manager.service ] && \
+   [ ! -L /etc/systemd/system/display-manager.service ]; then
+    log "/etc/systemd/system/display-manager.service exists and is not a symlink"
+    log "leaving it alone, refusing to replace a real file"
+    exit 1
+fi
+mkdir -p /etc/systemd/system
+if ln -sf "/usr/lib/systemd/system/$found.service" \
+           /etc/systemd/system/display-manager.service; then
+    log "display-manager.service now points at $found"
+    log "the system will reach a graphical login"
+else
+    log "could not link display-manager.service to $found"
+    log "the system will boot to a text console and needs a display manager enabled"
+    exit 1
+fi
