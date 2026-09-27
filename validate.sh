@@ -227,6 +227,66 @@ else
     bad "build.sh never touches the target's mirrorlist"
 fi
 
+# Licensing and attribution. Without a LICENSE the repository is not open
+# source at all: copyright defaults to all rights reserved, and nobody may even
+# read the code to modify it. The vendored tarballs are redistributed here, so
+# their licences have to be readable in the repository and not only inside the
+# archives.
+sect "Licensing and attribution"
+[[ -f LICENSE ]] && ok "LICENSE exists" || bad "no LICENSE: the repository is not open source"
+if [[ -f LICENSE ]]; then
+    if head -3 LICENSE | grep -q 'Apache License'; then
+        ok "LICENSE is Apache-2.0"
+    else
+        bad "LICENSE is not the Apache-2.0 text"
+    fi
+    if [[ $(wc -l < LICENSE) -gt 150 ]]; then
+        ok "LICENSE looks complete ($(wc -l < LICENSE) lines)"
+    else
+        bad "LICENSE is truncated: only $(wc -l < LICENSE) lines"
+    fi
+fi
+[[ -f NOTICE ]] && ok "NOTICE exists" || bad "no NOTICE: third-party attribution is missing"
+
+for lic in archiso-GPL-3.0.txt calamares-GPL-3.0-or-later.txt calamares-MIT.txt; do
+    f="licenses/$lic"
+    if [[ -s "$f" ]]; then
+        ok "vendored licence present: $lic"
+    else
+        bad "missing or empty vendored licence: $lic"
+    fi
+done
+empty=$(find licenses -size 0 2>/dev/null | wc -l)
+[[ "$empty" -eq 0 ]] && ok "no empty files under licenses/" \
+                     || bad "$empty empty file(s) under licenses/"
+
+# The mark has to be ours. Third-party artwork as a distribution logo is a
+# trademark problem, and the first version of this project used exactly that.
+for f in config/logo/nyancat.svg config/logo/nyan.svg; do
+    [[ -e "$f" ]] && bad "third-party artwork source is back: $f"
+done
+# validate.sh исключён из поиска: в нём самом записан проверяемый паттерн,
+# и без исключения проверка находила бы собственную команду grep.
+if git grep -qiE 'iliana|html5nyancat' -- . ':!validate.sh' 2>/dev/null; then
+    bad "the repository still refers to the third-party artwork project"
+    git grep -niE 'iliana|html5nyancat' -- . ':!validate.sh' | head -3 | sed 's/^/       /'
+else
+    ok "no reference to the third-party artwork project"
+fi
+if [[ -f scripts/make-logo.py ]]; then
+    ok "the logo is generated from scripts/make-logo.py, so it is reproducible"
+else
+    bad "no scripts/make-logo.py: the mark cannot be regenerated or verified"
+fi
+# Bar count is the one number that decides whether the mark survives being
+# 22 px tall in the installer's step list. Densely packed rows alias into noise.
+if grep -qE '^ROWS_ICON = ([0-9]{1,2}|[1-3][0-9])[[:space:]]*$' scripts/make-logo.py 2>/dev/null; then
+    ok "the icon uses a row count that stays legible at 22 px"
+else
+    bad "ROWS_ICON is missing or too dense; the icon will alias at small sizes"
+    grep -nE '^ROWS_ICON' scripts/make-logo.py 2>/dev/null | sed 's/^/       /'
+fi
+
 # --------------------------------------------------------------------------
 sect "Vendored archives"
 for a in vendor/calamares-v3.4.3.tar.gz vendor/archiso-v90.tar.gz; do
