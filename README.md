@@ -314,6 +314,10 @@ Contains the sources the image is built from, the branding, the installer
 configuration and the shipped helper scripts, together with a static checker
 that verifies the configuration before an image is produced.
 
+Licensed under the Apache License 2.0; see [LICENSE](LICENSE). Attribution for
+the redistributed third-party components, and the trademark position, are in
+[NOTICE](NOTICE).
+
 ## Notes
 
 - Test the installer in a virtual machine before using it on real hardware.
@@ -323,12 +327,21 @@ that verifies the configuration before an image is produced.
 
 ## Legal
 
-Arch Linux is a registered trademark. Nyx Linux is an independent derivative
-distribution and is not affiliated with, endorsed by, or presented as an
-official Arch Linux image.
+Arch Linux and CachyOS are the trademarks of their respective projects. Nyx
+Linux is an independent derivative distribution. It is not affiliated with,
+endorsed by, or presented as an official image of either project, and neither
+project has reviewed or approved it.
+
+`ID=arch` is set in the installed system's `os-release` on purpose: it is a
+statement about package compatibility, not a claim of affiliation, and it is
+what lets an unmodified Arch package install cleanly.
+
+The artwork is original. The logo is a crescent moon drawn as a stack of
+horizontal bars, generated entirely by `scripts/make-logo.py`, and the braille
+wordmark in `config/fastfetch/nyx.ascii` was made for this distribution.
+Neither is derived from any existing character or logo.
 
 The module layout of the default `fastfetch` preset follows the community
 [fastfetch](https://github.com/LierB/fastfetch) preset collection
 (`presets/nyarch.jsonc`, by Bina), reused for the way it puts `user@host` first.
-The logo is not from there: `config/fastfetch/nyx.ascii` is original artwork made
-for this distribution. Nyx Linux is not an official Nyarch release.
+Nyx Linux is not an official Nyarch release.
