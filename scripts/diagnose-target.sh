@@ -102,7 +102,7 @@ run_pacman() {
     : > "$LOG"
     note "--- $label (таймаут ${secs}s) ---"
     ( chroot "$T" /bin/bash -c "
-          out=\$(timeout $secs pacman --config $conf --logfile /dev/null -Sy --verbose 2>&1)
+          timeout $secs pacman --config $conf --logfile /dev/null -Sy --verbose 2>&1
           echo \"__RC__\$?\"
       " >"$LOG" 2>&1 ) &
     local pid=$!

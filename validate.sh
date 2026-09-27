@@ -1514,6 +1514,44 @@ if [[ -f "$SETTINGS" ]]; then
             bad "exec order:$early run before unpackfs, so they chroot into an empty target"
         fi
     fi
+
+    # The keyring has to be populated before packages, or pacman -Sy is refused.
+    # pacstrap installs archlinux-keyring but never runs pacman-key --populate in
+    # the target, so it starts with 183 keys and none of them trusted, while
+    # core and extra ask for SigLevel = Required. This was the only bug that ever
+    # stopped an installation from finishing.
+    KEYRING_CONF=config/calamares/modules/shellprocess-keyring.conf
+    if [[ -f "$KEYRING_CONF" ]]; then
+        ok "keyring step exists"
+        if grep -q 'pacman-key --init' "$KEYRING_CONF" && \
+           grep -q 'pacman-key --populate archlinux' "$KEYRING_CONF"; then
+            ok "keyring step runs pacman-key --init and --populate archlinux"
+        else
+            bad "keyring step does not initialise and populate the keyring"
+        fi
+        # A step that cannot tell success from failure is not a step. The three
+        # tokens are looked up separately: inside the YAML block scalar the
+        # command folds onto one line, but in the file it spans several, so a
+        # single-line pattern across them never matches.
+        if grep -q 'trusted' "$KEYRING_CONF" && \
+           grep -q 'wc -l' "$KEYRING_CONF" && \
+           grep -qE '^\s*if \[' "$KEYRING_CONF"; then
+            ok "keyring step verifies that a trusted key appeared"
+        else
+            bad "keyring step does not verify its own result"
+            grep -cE 'trusted|wc -l|^\s*if \[' "$KEYRING_CONF" |
+                sed 's/^/       matching lines: /'
+        fi
+        i_keyring=$(printf '%s\n' "$exec_seq" | grep -nx 'shellprocess@keyring' | cut -d: -f1)
+        if [[ -n "$i_keyring" && -n "$i_packages" ]] && (( i_keyring < i_packages )); then
+            ok "exec order: shellprocess@keyring ($i_keyring) before packages ($i_packages)"
+        else
+            bad "exec order: shellprocess@keyring must run before packages, or pacman -Sy is refused"
+            [[ -z "$i_keyring" ]] && echo "       module is not in the sequence at all"
+        fi
+    else
+        bad "no $KEYRING_CONF: the target keyring is never populated and installs cannot finish"
+    fi
 fi
 
 # The autostart entry is packaged, so it must NOT be expected loose in the tree.
