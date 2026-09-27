@@ -194,6 +194,7 @@ for f in \
     config/base-rootfs-overlay/etc/pacman.d/hooks/99-nyx-os-release.hook \
     config/base-rootfs-overlay/usr/local/sbin/update-arch-limine \
     config/base-rootfs-overlay/usr/local/sbin/nyx-configure-bootloader \
+    config/base-rootfs-overlay/usr/local/sbin/nyx-prepare-keyring \
     config/base-rootfs-overlay/usr/local/sbin/update-nyx-os-release
 do
     [[ -f "$f" ]] && ok "exists $f" || bad "missing $f"
@@ -296,14 +297,44 @@ if [[ -f scripts/make-logo.py ]]; then
 else
     bad "no scripts/make-logo.py: the mark cannot be regenerated or verified"
 fi
-# Bar count is the one number that decides whether the mark survives being
-# 22 px tall in the installer's step list. Densely packed rows alias into noise.
-if grep -qE '^ROWS_ICON = ([0-9]{1,2}|[1-3][0-9])[[:space:]]*$' scripts/make-logo.py 2>/dev/null; then
-    ok "the icon uses a row count that stays legible at 22 px"
+# The mark is a path with stripes clipped to it, not a stack of bars. Bars tied
+# the silhouette to the row count: 102 rows aliased to noise at 22 px, 26 rows
+# looked clean in a browser and still turned to a blob in the installer header,
+# and 12 rows left a staircase along the outer edge. The checks below assert the
+# decoupling rather than a magic number, because no number would have been right
+# in all three cases at once.
+if [[ -f scripts/make-logo.py ]]; then
+    # Anchored, not a substring: a plain grep for "def crescent_path" also
+    # matches def crescent_path_DISABLED, so a check written that way passes on
+    # a tree where the function has been renamed out of the way.
+    if grep -qE '^def crescent_path\(' scripts/make-logo.py; then
+        ok "the crescent is drawn as a path, so its silhouette is smooth at any size"
+    else
+        bad "no crescent_path() in make-logo.py: the mark is probably built from bars again"
+    fi
+    if grep -q 'clipPath' scripts/make-logo.py && \
+       grep -qE '^def emit_stripes\(' scripts/make-logo.py; then
+        ok "the row texture is clipped lines over the path, not the silhouette itself"
+    else
+        bad "the texture is not clipped to the crescent; the edge will go coarse at small sizes"
+    fi
+    if grep -qE '^STRIPES = [0-9]{1,2}[[:space:]]*$' scripts/make-logo.py; then
+        ok "STRIPES is a modest number"
+    else
+        bad "STRIPES is missing or implausibly large"
+    fi
 else
-    bad "ROWS_ICON is missing or too dense; the icon will alias at small sizes"
-    grep -nE '^ROWS_ICON' scripts/make-logo.py 2>/dev/null | sed 's/^/       /'
+    bad "no scripts/make-logo.py"
 fi
+# Every shipped SVG must draw with what the file itself carries.
+while IFS= read -r svg; do
+    if grep -qE 'base64|<image' "$svg"; then
+        bad "embedded raster in $svg"
+    fi
+    if grep -oE 'href="[^"]*"' "$svg" | grep -qv 'http://www.w3.org'; then
+        bad "external reference in $svg"
+    fi
+done < <(git ls-files '*.svg')
 
 # --------------------------------------------------------------------------
 sect "Vendored archives"
@@ -1539,26 +1570,51 @@ if [[ -f "$SETTINGS" ]]; then
     # core and extra ask for SigLevel = Required. This was the only bug that ever
     # stopped an installation from finishing.
     KEYRING_CONF=config/calamares/modules/shellprocess-keyring.conf
+    KEYRING_SCRIPT=config/base-rootfs-overlay/usr/local/sbin/nyx-prepare-keyring
     if [[ -f "$KEYRING_CONF" ]]; then
         ok "keyring step exists"
-        if grep -q 'pacman-key --init' "$KEYRING_CONF" && \
-           grep -q 'pacman-key --populate archlinux' "$KEYRING_CONF"; then
-            ok "keyring step runs pacman-key --init and --populate archlinux"
+        # shellprocess substitutes variables in the command string and treats
+        # every dollar sign as one. An inline version failed at install time with
+        # "Missing variables are: keys,keys,2,2,total,trusted,trusted", the 2,2
+        # coming from awk's $2. So the module must call a script, and a command
+        # containing a dollar sign is a defect no matter what it does.
+        #
+        # Only the commands are examined. Comments are not substituted, and this
+        # file explains the failure above in prose, so a naive check flagged its
+        # own explanation.
+        if grep -vE '^[[:space:]]*#' "$KEYRING_CONF" | grep -q '\$'; then
+            bad "a command in the keyring module contains a dollar sign; shellprocess will treat it as a variable"
+            grep -vE '^[[:space:]]*#' "$KEYRING_CONF" | grep -n '\$' | head -3 | sed 's/^/       /'
         else
-            bad "keyring step does not initialise and populate the keyring"
+            ok "no command in the keyring module has a dollar sign to substitute"
         fi
-        # A step that cannot tell success from failure is not a step. The three
-        # tokens are looked up separately: inside the YAML block scalar the
-        # command folds onto one line, but in the file it spans several, so a
-        # single-line pattern across them never matches.
-        if grep -q 'trusted' "$KEYRING_CONF" && \
-           grep -q 'wc -l' "$KEYRING_CONF" && \
-           grep -qE '^\s*if \[' "$KEYRING_CONF"; then
-            ok "keyring step verifies that a trusted key appeared"
+        if grep -q 'command: "nyx-prepare-keyring"' "$KEYRING_CONF"; then
+            ok "the keyring module calls nyx-prepare-keyring"
         else
-            bad "keyring step does not verify its own result"
-            grep -cE 'trusted|wc -l|^\s*if \[' "$KEYRING_CONF" |
-                sed 's/^/       matching lines: /'
+            bad "the keyring module does not call nyx-prepare-keyring"
+        fi
+        if [[ -f "$KEYRING_SCRIPT" ]]; then
+            ok "nyx-prepare-keyring exists"
+            if grep -q 'pacman-key --init' "$KEYRING_SCRIPT" && \
+               grep -q 'pacman-key --populate archlinux' "$KEYRING_SCRIPT"; then
+                ok "the script initialises and populates the keyring"
+            else
+                bad "the script does not initialise and populate the keyring"
+            fi
+            # A step that cannot tell success from failure is not a step.
+            if grep -q 'count_trusted' "$KEYRING_SCRIPT" && \
+               grep -qE '^\s*if \[ "\$trusted" -gt 0 \]' "$KEYRING_SCRIPT"; then
+                ok "the script verifies that a trusted key appeared"
+            else
+                bad "the script does not verify its own result"
+            fi
+            if grep -qE 'install -Dm0755 .*nyx-prepare-keyring' build.sh; then
+                ok "build.sh installs nyx-prepare-keyring into the target"
+            else
+                bad "build.sh does not install nyx-prepare-keyring, so the module cannot run it"
+            fi
+        else
+            bad "no $KEYRING_SCRIPT: the module calls a script that does not exist"
         fi
         i_keyring=$(printf '%s\n' "$exec_seq" | grep -nx 'shellprocess@keyring' | cut -d: -f1)
         if [[ -n "$i_keyring" && -n "$i_packages" ]] && (( i_keyring < i_packages )); then

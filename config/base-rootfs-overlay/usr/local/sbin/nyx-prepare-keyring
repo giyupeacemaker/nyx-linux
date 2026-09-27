@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Prepare the package keyring in the target system.
+#
+# pacstrap installs archlinux-keyring but never runs pacman-key --populate in the
+# root it creates. The keyring that ships in the target holds 183 keys and not
+# one of them carries full or ultimate trust: 149 have none, 15 are expired, 19
+# are revoked, and the Arch master keys read as expired or revoked because
+# nothing anchors the trust database.
+#
+# /etc/pacman.conf asks core and extra for SigLevel = Required DatabaseOptional.
+# Both databases are signed, DatabaseOptional means a present signature has to
+# verify, and with no trusted key pacman is obliged to refuse. That refusal was
+# the "pacman -Sy returned error code 1" that stopped every installation, while
+# the identical command in the live session succeeded because there the keyring
+# lives on a writable tmpfs and populates itself on first use.
+#
+# This lives in a file rather than inline in the Calamares module because
+# shellprocess substitutes variables in the command string and treats every
+# dollar sign as one. An inline version failed at install time with:
+#   Missing variables are: keys,keys,2,2,total,trusted,trusted
+# where the 2,2 came from awk's $2. A file has no such problem.
+set -uo pipefail
+
+KEYDIR=/etc/pacman.d/gnupg
+
+log() { printf 'nyx-prepare-keyring: %s\n' "$*"; }
+warn() { printf 'nyx-prepare-keyring: %s\n' "$*" >&2; }
+
+count_keys() {
+    gpg --homedir "$KEYDIR" --list-keys --with-colons 2>/dev/null | grep -c '^pub' || true
+}
+
+count_trusted() {
+    # Field 2 of a pub line is the ownertrust letter: f is full, u ultimate.
+    # Anything else is not enough for SigLevel = Required.
+    gpg --homedir "$KEYDIR" --list-keys --with-colons 2>/dev/null |
+        awk -F: '/^pub/ && ($2 == "f" || $2 == "u")' | wc -l
+}
+
+log "initialising the local keyring"
+if ! pacman-key --init; then
+    warn "pacman-key --init failed; continuing and checking the result anyway"
+fi
+
+log "populating the Arch keys"
+if ! pacman-key --populate archlinux; then
+    warn "pacman-key --populate archlinux failed; continuing and checking the result"
+fi
+
+total=$(count_keys)
+trusted=$(count_trusted)
+log "keyring: ${total} keys, ${trusted} trusted"
+
+if [ "$trusted" -gt 0 ]; then
+    log "keyring is populated, package signatures will be verified"
+    exit 0
+fi
+
+# Say plainly what is lost. A silent downgrade would be worse than the failure
+# it replaces: the installed system would go on checking nothing while looking
+# like it checked something.
+warn "still no trusted key after populate"
+warn "relaxing SigLevel for core and extra so the installation can finish"
+warn "package signatures will NOT be verified in the installed system"
+if sed -i 's/^SigLevel = Required DatabaseOptional$/SigLevel = Optional TrustAll/' \
+       /etc/pacman.conf; then
+    warn "SigLevel in /etc/pacman.conf is now Optional TrustAll"
+else
+    warn "could not change SigLevel; pacman will likely refuse to sync"
+fi
+warn "run 'pacman-key --populate archlinux' once online to restore signature checking"
+exit 0

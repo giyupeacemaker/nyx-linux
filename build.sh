@@ -305,6 +305,18 @@ for helper in update-arch-limine nyx-configure-bootloader update-nyx-os-release;
     install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/$helper" \
         "$BASE_ROOTFS/usr/local/sbin/$helper"
 done
+# The keyring step of the installer is a one-line shellprocess module that calls
+# this script. The logic cannot live in the module itself: shellprocess treats
+# every dollar sign in the command string as a variable to substitute, and the
+# first version died at install time with "Missing variables are:
+# keys,keys,2,2,total,trusted,trusted", where the 2,2 came from awk's $2.
+install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/nyx-prepare-keyring" \
+    "$BASE_ROOTFS/usr/local/sbin/nyx-prepare-keyring"
+# The keyring step of the installer is a one-line shellprocess module that calls
+# this script. The logic cannot live in the module itself: shellprocess treats
+# every dollar sign in the command string as a variable to substitute, and the
+# first version died at install time with "Missing variables are:
+# keys,keys,2,2,total,trusted,trusted", where the 2,2 came from awk's $2.
 install -Dm0755 "$SRC/config/base-rootfs-overlay/usr/local/sbin/nyx-update-git" \
     "$BASE_ROOTFS/usr/local/sbin/nyx-update-git"
 # The kernel command line helper. Both bootloader writers refuse to run without
