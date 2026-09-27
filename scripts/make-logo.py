@@ -222,28 +222,23 @@ def build_mark(width: int = 420, height: int = 420) -> str:
     return "\n".join(out) + "\n"
 
 
-def build_logo_wide(width: int = 1200, height: int = 420) -> str:
-    """Mark plus the name, for the installer's header."""
-    mark_w = int(height * 1.25)
-    cx, cy, r = mark_w / 2.0, height / 2.0, height * 0.38
+def build_logo_wide(width: int = 420, height: int = 420) -> str:
+    """The mark alone, for the installer's header.
+
+    This used to be a 1200x420 composition with "NYX" and "LINUX" set beside
+    the crescent. The mark is the whole identity now, so the text is gone and
+    the canvas is square like the sidebar's. A wide canvas holding a lone
+    crescent would render as a small shape drifting in empty space, which is
+    worse than the square one.
+    """
+    cx, cy, r = width / 2.0, height / 2.0, height * 0.40
     d = crescent_path(cx, cy, r)
-    text_x = mark_w + height * 0.22
 
     out = svg_open(width, height)
     out.append(defs([("ink", INK_TOP, INK_BOTTOM)], "crescent", d))
     out.append(f'  <path d="{d}" fill="url(#ink)"/>')
-    out += emit_stripes("crescent", cx, cy, r, mark_w, STRIPES)
-    out += emit_stars(mark_w, height, height / 420.0, "0.5")
-    out.append(
-        f'  <text x="{fmt(text_x)}" y="{fmt(height * 0.50)}" fill="{TEXT_MAIN}" '
-        f'font-family="{MONO}" font-size="{fmt(height * 0.30)}" font-weight="700" '
-        f'letter-spacing="{fmt(height * 0.045)}">NYX</text>'
-    )
-    out.append(
-        f'  <text x="{fmt(text_x + height * 0.04)}" y="{fmt(height * 0.75)}" '
-        f'fill="{TEXT_DIM}" font-family="{MONO}" font-size="{fmt(height * 0.13)}" '
-        f'letter-spacing="{fmt(height * 0.085)}">LINUX</text>'
-    )
+    out += emit_stripes("crescent", cx, cy, r, width, STRIPES)
+    out += emit_stars(width, height, height / 420.0, "0.5")
     out.append("</svg>")
     return "\n".join(out) + "\n"
 
@@ -277,18 +272,12 @@ def build_canvas(width: int, height: int, welcome: bool) -> str:
     out.append("  </g>")
 
     if welcome:
-        out.append(
-            f'  <text x="{fmt(width * 0.5)}" y="{fmt(height * 0.80)}" '
-            f'fill="{TEXT_MAIN}" font-family="{MONO}" font-size="{fmt(height * 0.085)}" '
-            f'font-weight="700" text-anchor="middle" '
-            f'letter-spacing="{fmt(height * 0.024)}">NYX LINUX</text>'
-        )
-        out.append(
-            f'  <text x="{fmt(width * 0.5)}" y="{fmt(height * 0.875)}" '
-            f'fill="{TEXT_DIM}" font-family="{MONO}" font-size="{fmt(height * 0.032)}" '
-            f'text-anchor="middle" letter-spacing="{fmt(height * 0.010)}">'
-            f"UEFI and GPT, and no other boot mode</text>"
-        )
+        # There is no name here, and no "UEFI and GPT" line either. The mark is
+        # the identity; a title screen with a title under the mark was exactly
+        # what the installer already says in its window title, and the boot mode
+        # restriction is stated in the partitioning step where it is decided.
+        out.append("</svg>")
+        return "\n".join(out) + "\n"
     out.append("</svg>")
     return "\n".join(out) + "\n"
 

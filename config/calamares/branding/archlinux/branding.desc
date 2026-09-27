@@ -14,7 +14,7 @@ strings:
   shortProductName: "Nyx Linux"
   version: "2026.09.01"
   shortVersion: "Nyx Linux"
-  versionedName: "Nyx Linux (Arch-based)"
+  versionedName: "Nyx Linux"
   shortVersionedName: "Nyx Linux"
   bootloaderEntryName: "NyxLinux"
   productUrl: "https://github.com/giyupeacemaker"

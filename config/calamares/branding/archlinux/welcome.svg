@@ -29,6 +29,4 @@
     <line x1="636" y1="652.32" x2="1284" y2="652.32"/>
   </g>
   </g>
-  <text x="960" y="864" fill="#e2e8f0" font-family="DejaVu Sans Mono, Liberation Mono, monospace" font-size="91.8" font-weight="700" text-anchor="middle" letter-spacing="25.92">NYX LINUX</text>
-  <text x="960" y="945" fill="#94a3b8" font-family="DejaVu Sans Mono, Liberation Mono, monospace" font-size="34.56" text-anchor="middle" letter-spacing="10.8">UEFI and GPT, and no other boot mode</text>
 </svg>

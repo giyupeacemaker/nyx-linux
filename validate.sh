@@ -812,37 +812,146 @@ else
 fi
 
 if (( ${#pacman_q[@]} > 0 )); then
+    # Both list forms have to be read. The inline one, "packages: [ a, b ]", was
+    # invisible to the first version of this check: its parser only matched lines
+    # beginning with a dash, so every inline list in the tree went unverified.
+    # That is not a corner case, it is how yay, paru, the bootloader chooser and
+    # the extras chooser are all written, so a typo in any of them passed.
+    #
+    # Three fields come out: item id, package, and the id repeated with a marker
+    # carrying the whole list, for the invariant check further down.
     mapfile -t chooser_pkgs < <(python3 - config/calamares/modules <<'PY' 2>/dev/null
 import re, sys, pathlib
 for f in sorted(pathlib.Path(sys.argv[1]).glob('packagechooser-*.conf')):
     text = f.read_text(encoding='utf-8')
+    src = f.name
     cur = None
+    block = []
+    def flush():
+        # Every finished item emits its own per-package lines here. The first
+        # version emitted them only after the loop, which is to say for the last
+        # item alone, so 122 names in the tree were checked as 2 and the check
+        # reported success while looking at almost nothing.
+        if not cur:
+            return
+        if block:
+            print("\t".join(["!LIST", src, cur, " ".join(block)]))
+        for p in block:
+            print(f"{cur}\t{p}")
     for line in text.splitlines():
         m = re.match(r'\s*-\s*id:\s*(\S+)\s*$', line)
         if m:
-            cur = m.group(1); continue
-        m = re.match(r'\s*-\s+([a-z0-9][a-z0-9._+-]*)\s*$', line)
+            flush()
+            cur, block = m.group(1), []
+            continue
+        m = re.match(r'\s*packages:\s*\[(.*)\]\s*$', line)
         if m and cur:
-            print(f"{cur}\t{m.group(1)}")
+            block += [p for p in (x.strip() for x in m.group(1).split(',')) if p]
+            continue
+        if re.match(r'\s*packages:\s*$', line):
+            continue
+        # Comment lines inside a package list are skipped rather than ending the
+        # list. Ending it there is what made octopi invisible in one of the
+        # checks, since the note above it explains why Discover was replaced.
+        s = line.strip()
+        if not s or s.startswith('#'):
+            continue
+        m = re.match(r'-\s+([a-z0-9][a-z0-9._+-]*)\s*$', s)
+        if m and cur:
+            block.append(m.group(1))
+    flush()
 PY
     )
     if (( ${#chooser_pkgs[@]} == 0 )); then
         warn "could not parse the packagechooser lists"
     else
         missing_choice=0
+        checked=0
+        # Nyx is an Arch distribution with the CachyOS repository enabled, so
+        # some choices are only findable there: octopi, yay, paru and the kernel
+        # itself. If the pacman being queried has no cachyos repository, those
+        # names cannot resolve no matter how correct the project is, and
+        # reporting that as a project defect would be a false alarm that trains
+        # people to ignore this check. So say the check is partial instead.
+        has_cachyos=0
+        if "${pacman_q[@]}" -Sl 2>/dev/null | cut -d' ' -f1 | grep -qx 'cachyos'; then
+            has_cachyos=1
+        fi
+        if (( has_cachyos == 0 )); then
+            warn "the queried pacman has no cachyos repository, so choices living only in CachyOS cannot be verified here"
+        fi
         for pair in "${chooser_pkgs[@]}"; do
+            [[ "$pair" == '!LIST'* ]] && continue
             name="${pair##*$'\t'}"
+            checked=$((checked + 1))
             if "${pacman_q[@]}" -Si -- "$name" >/dev/null 2>&1; then
                 continue
             fi
             if "${pacman_q[@]}" -Sgq 2>/dev/null | grep -qx -- "$name"; then
                 continue   # a group, which pacman -S still accepts
             fi
-            bad "installer choice refers to unknown package or group: $name"
+            if (( has_cachyos == 0 )); then
+                warn "choice $name is not in the local databases; it may be a CachyOS-only package, or a typo"
+            else
+                bad "installer choice refers to unknown package or group: $name"
+            fi
             missing_choice=$((missing_choice + 1))
         done
         if (( missing_choice == 0 )); then
-            ok "all ${#chooser_pkgs[@]} installer package choices resolve"
+            ok "all $checked installer package choices resolve, inline lists included"
+        else
+            ok "$((checked - missing_choice)) of $checked installer package choices resolved against the local databases"
+        fi
+
+        # A desktop that cannot ask for a password and cannot open a file chooser
+        # is not a desktop, and neither is one that boots to a text console. The
+        # installed system hit the last of these for real, so a missing member is
+        # a per-choice defect that shows up only on the machine of whoever picked
+        # it.
+        #
+        # This is scoped to the desktop chooser on purpose. Applying it to every
+        # chooser in the tree is what the first version did, and it produced
+        # nonsense: it complained that the Firefox group and the Yay AUR helper
+        # have no polkit agent, when both are additions to a system that already
+        # has one from the desktop that was chosen.
+        inv_fail=0
+        inv_checked=0
+        # Split by tab with parameter expansion, not by word splitting. This
+        # script sets IFS to newline-and-tab, so a space is not a word separator
+        # and "${rec//$'\t'/ }" yields one element, not four. Indexing the
+        # missing second element then aborts the whole run under set -u, which
+        # is how the first attempt at this check reported 158 checks and no
+        # summary line instead of complaining about anything.
+        for rec in "${chooser_pkgs[@]}"; do
+            [[ "$rec" == '!LIST'* ]] || continue
+            rest="${rec#*$'\t'}"          # strip the !LIST marker
+            src="${rest%%$'\t'*}"         # source file
+            rest="${rest#*$'\t'}"         # id
+            cid="${rest%%$'\t'*}"
+            pkgs="${rest#*$'\t'}"
+            [[ "$src" == 'packagechooser-desktop.conf' ]] || continue
+            inv_checked=$((inv_checked + 1))
+            [[ -z "$pkgs" ]] && continue   # the minimal choice installs nothing
+            if ! grep -q 'polkit' <<<"$pkgs"; then
+                bad "desktop choice $cid has no polkit agent, so it cannot ask for a password"
+                inv_fail=$((inv_fail + 1))
+            fi
+            # Enlightenment is the one documented exception. It runs on X11 and on
+            # Wayland, and the portal has to match the session, so shipping one
+            # breaks the other. The reason is written next to its package list,
+            # and the omission is real rather than hidden: anyone installing that
+            # desktop has to add the portal for the session they start.
+            if ! grep -q 'xdg-desktop-portal' <<<"$pkgs" && [[ "$cid" != 'enlightenment' ]]; then
+                bad "desktop choice $cid has no desktop portal, so file choosers will not open"
+                inv_fail=$((inv_fail + 1))
+            fi
+            if ! grep -qE '(sddm|gdm|lightdm|lxdm|slim)' <<<"$pkgs"; then
+                bad "desktop choice $cid has no display manager, so it would boot to a text console"
+                inv_fail=$((inv_fail + 1))
+            fi
+        done
+        if (( inv_fail == 0 && inv_checked > 0 )); then
+            ok "all $inv_checked desktop choices carry a polkit agent, a portal and a display manager"
         fi
     fi
 else

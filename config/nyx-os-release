@@ -1,11 +1,25 @@
 NAME="Nyx Linux"
-PRETTY_NAME="Nyx Linux (Arch-based)"
+PRETTY_NAME="Nyx Linux"
 ID=arch
 ID_LIKE=arch
-VARIANT="Arch-based"
 VERSION="@RELEASE@"
 VERSION_ID="@RELEASE@"
-PRETTY_VERSION="Nyx Linux @RELEASE@ (Arch-based)"
+PRETTY_VERSION="Nyx Linux @RELEASE@"
 BUILD_ID="nyx"
 ANSI_COLOR="0;36"
+# The name says Nyx Linux and nothing else. "Arch-based" used to sit in
+# PRETTY_NAME, VARIANT and PRETTY_VERSION, and it came from nowhere useful: the
+# user interface shows PRETTY_NAME, so the installer announced itself as "Nyx
+# Linux (Arch-based) has been installed" and the window title carried the same
+# parentheses.
+#
+# What it did not do was make the base any less Arch. ID=arch and ID_LIKE=arch
+# are what pacman reads to decide compatibility, what makes Arch packages
+# installable, and what a reader of this file can verify. They stay exactly as
+# they were, because a claim that can be checked is worth more than a claim in
+# brackets. The base is stated plainly in README.md, README.ru.md and NOTICE,
+# where attribution belongs.
+#
+# VARIANT is gone rather than emptied: it only ever held "Arch-based", and an
+# empty VARIANT is worse than no key at all.
 # Add GitHub project, support, and release URLs here when the repository is published.
