@@ -9,7 +9,29 @@ JOBS="${JOBS:-$(nproc)}"
 KEEP_BUILD="${KEEP_BUILD:-0}"
 RELEASE="2026.09.01"
 CALAMARES_VERSION="3.4.3"
-FINAL_NAME="nyx-linux-cachyos-calamares-${RELEASE}-x86_64.iso"
+
+# The ISO is named after the release date, not the day the build happened.
+# SOURCE_DATE_EPOCH below is pinned to $RELEASE, so rebuilding on a later day
+# reproduces byte identical content; reading the date from `date` would give the
+# file a name that promises a build which did not happen.
+#
+# RELEASE is checked before it is split. Checking the derived stamp instead would
+# be the obvious shortcut and it is wrong: RELEASE=2026.09 yields the stamp
+# 09.09.2026, which matches the DD.MM.YYYY shape perfectly and is a different
+# date from the one intended. Shape is not correctness.
+[[ "$RELEASE" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}$ ]] \
+    || die "RELEASE is '$RELEASE', expected YYYY.MM.DD"
+_iso_year="${RELEASE%%.*}"
+_iso_rest="${RELEASE#*.}"
+_iso_month="${_iso_rest%%.*}"
+_iso_day="${_iso_rest#*.}"
+ISO_STAMP="${_iso_day}.${_iso_month}.${_iso_year}"
+
+# Kept in step with iso_name in profiledef.sh below. mkarchiso names the file
+# <iso_name>-<iso_version>-<arch>.iso, so these two have to agree or the copy
+# step looks for a file that was never written.
+ISO_BASE_NAME="nyx-linux-alpha"
+FINAL_NAME="${ISO_BASE_NAME}-${ISO_STAMP}-x86_64.iso"
 
 log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 info() { printf '\033[0;36m[INFO]\033[0m %s\n' "$*"; }
@@ -227,6 +249,27 @@ install_nyx_os_release "$BASE_ROOTFS"
 install -Dm0644 "$SRC/config/live-pacman.conf" "$BASE_ROOTFS/etc/pacman.conf"
 install -Dm0644 "$SRC/config/locale.gen" "$BASE_ROOTFS/etc/locale.gen"
 cp -a "$SRC/config/base-rootfs-overlay/." "$BASE_ROOTFS/"
+
+# pacstrap installs pacman-mirrorlist even under -M: the flag only stops the host's
+# mirrorlist from being copied, it does not skip the package. The target therefore
+# already has the full upstream list on disk, shipped almost entirely commented out.
+#
+# An earlier version of this file overwrote it with four hand-picked servers, on the
+# theory that -M leaves the target without mirrors. That was wrong in both directions:
+# it discarded a several-hundred-server list, and four servers with no fallback is
+# worse than none at all, because pacman gets exactly one attempt during installation
+# and has nothing to retry against when a mirror is briefly unreachable.
+#
+# Uncomment the HTTPS servers instead, which is what archiso's own
+# uncomment_https_mirrors.sh does for the live image, so both halves of the ISO end
+# up carrying the same set. Then refuse to build if the result is not a real list.
+sed -i -E 's/^[[:space:]]*#+[[:space:]]*(Server[[:space:]]*=[[:space:]]*https:\/\/)/\1/' \
+    "$BASE_ROOTFS/etc/pacman.d/mirrorlist"
+nyx_mirrors=$(grep -c '^Server' "$BASE_ROOTFS/etc/pacman.d/mirrorlist" || true)
+if (( nyx_mirrors < 50 )); then
+    die "target mirrorlist has only ${nyx_mirrors} active servers; the full pacman-mirrorlist set was expected"
+fi
+log "Target mirrorlist: ${nyx_mirrors} active servers"
 # The overlay comes from a Windows working copy, so force sane permissions.
 # nyx-updates, nyx-rollback and nyx-apply-wallpaper are deliberately not in this
 # list: they belong to the nyx-tools package now, and having them in two places
@@ -266,8 +309,6 @@ install -m 0644 "${nyx_tools_packages[0]}" "$BASE_ROOTFS/var/cache/nyx-repo/"
 # package from the ISO and every later build that nyx-update-git appends.
 repo-add --quiet "$BASE_ROOTFS/var/cache/nyx-repo/nyx.db.tar.zst" \
     "$BASE_ROOTFS/var/cache/nyx-repo"/*.pkg.tar.zst
-install -Dm0644 "$SRC/config/base-rootfs-overlay/etc/pacman.d/mirrorlist" \
-    "$BASE_ROOTFS/etc/pacman.d/mirrorlist"
 install -Dm0644 "$SRC/config/base-rootfs-overlay/etc/pacman.d/hooks/99-arch-limine.hook" \
     "$BASE_ROOTFS/etc/pacman.d/hooks/99-arch-limine.hook"
 install -Dm0644 "$SRC/config/base-rootfs-overlay/etc/pacman.d/hooks/99-nyx-os-release.hook" \
@@ -370,14 +411,19 @@ if grep -rqs '^title .*Arch Linux' "$PROFILE/efiboot/loader/entries/"; then
     die "an ISO boot entry still advertises 'Arch Linux' in its title."
 fi
 
-cat >"$PROFILE/profiledef.sh" <<'EOF'
+# The ISO carries the release date in its name, not the day the build happened.
+# ISO_STAMP is derived at the top of this script, next to the check on RELEASE.
+#
+# Unquoted heredoc on purpose: the only value that has to reach the file is
+# $ISO_STAMP. The block contains no other dollar sign, so nothing else expands.
+cat >"$PROFILE/profiledef.sh" <<EOF
 #!/usr/bin/env bash
 # shellcheck disable=SC2034
-iso_name="nyx-linux-cachyos-calamares"
-iso_label="NYX_LINUX_CACHYOS"
+iso_name="$ISO_BASE_NAME"
+iso_label="NYX_LINUX_ALPHA"
 iso_publisher="Nyx Linux Project"
 iso_application="Nyx Linux Live/Rescue with Calamares"
-iso_version="2026.09.01-nyx.1"
+iso_version="$ISO_STAMP"
 install_dir="arch"
 buildmodes=('iso')
 bootmodes=('uefi.systemd-boot')
@@ -445,6 +491,17 @@ stage_nyx_os_release "$AIROOTFS"
 
 install -Dm0644 "$SRC/config/live-pacman.conf" \
     "$AIROOTFS/usr/share/arch-custom/pacman.conf"
+# archiso copies that template over the live /etc/pacman.conf near the end of
+# the build, so the live session ends up with the [nyx] section pointing at
+# /var/cache/nyx-repo. A repository listed in pacman.conf that cannot be synced
+# is a fatal error for pacman, not a warning: every pacman -Sy in the live
+# session would abort on it, taking ordinary Arch updates down with it. So the
+# live image has to actually carry the repository its own config names. It is
+# 30 KB, and it also means nyx-tools can be installed or updated straight from
+# the live session. The database was built for the target above; one copy of it
+# serves both images.
+install -d -m 0755 "$AIROOTFS/var/cache/nyx-repo"
+cp -a "$BASE_ROOTFS/var/cache/nyx-repo/." "$AIROOTFS/var/cache/nyx-repo/"
 # archiso's mkarchiso never creates accounts, and releng's profile lists only
 # root, so the live session used to have no user to log into: SDDM's autologin
 # pointed at nobody and Calamares never started. config/live-setup.sh runs from
@@ -588,6 +645,13 @@ else
     die "The live skel is missing the fastfetch presets."
 fi
 
+# The autostart entry is deliberately absent from this list. It belongs to
+# the nyx-tools package, because pacman has to own it, and the installer runs
+# packages before users so that /etc/skel is complete before any home directory
+# is made from it. Expecting it loose in the base rootfs was the bug this
+# replaced, and this comment lives above the list rather than inside it: bash
+# treats a "#" after a backslash as a comment, swallows the continuation, and the
+# next line arrives as a command of its own.
 base_listing="$(mktemp)"
 unsquashfs -ll "$BASE_SQUASHFS" >"$base_listing"
 for required in \
@@ -604,7 +668,6 @@ for required in \
     'usr/share/backgrounds/nyx.jpg' \
     'usr/share/wallpapers/nyx/metadata.json' \
     'usr/share/wallpapers/nyx/contents.jpg' \
-    'etc/skel/.config/autostart/nyx-wallpaper.desktop' \
     'etc/pacman.d/mirrorlist' \
     'etc/skel/.config/fastfetch/config.jsonc' \
     'etc/skel/.config/fastfetch/arch.jsonc' \

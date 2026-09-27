@@ -190,7 +190,6 @@ done < <(grep -rhoE '/etc/calamares/branding/archlinux/[A-Za-z0-9._-]+' config/c
 for f in \
     config/nyx-os-release \
     config/live-pacman.conf \
-    config/base-rootfs-overlay/etc/pacman.d/mirrorlist \
     config/base-rootfs-overlay/etc/pacman.d/hooks/99-arch-limine.hook \
     config/base-rootfs-overlay/etc/pacman.d/hooks/99-nyx-os-release.hook \
     config/base-rootfs-overlay/usr/local/sbin/update-arch-limine \
@@ -199,6 +198,34 @@ for f in \
 do
     [[ -f "$f" ]] && ok "exists $f" || bad "missing $f"
 done
+
+# The target's mirrorlist must not be a hand-written one. pacstrap installs
+# pacman-mirrorlist even under -M, so the full upstream list is already on disk
+# and only needs its HTTPS servers uncommented. Shipping a short hand-picked list
+# in the overlay discards it, and a list with no fallback leaves the Calamares
+# "packages" step with nothing to sync from.
+if [[ -f config/base-rootfs-overlay/etc/pacman.d/mirrorlist ]]; then
+    bad "overlay ships its own mirrorlist, overwriting the full pacman-mirrorlist set"
+    printf '       hand-picked servers: %s\n' \
+        "$(grep -c '^Server' config/base-rootfs-overlay/etc/pacman.d/mirrorlist || echo 0)"
+else
+    ok "overlay does not ship a mirrorlist (pacman-mirrorlist is used instead)"
+fi
+
+if grep -q 'pacman.d/mirrorlist' build.sh; then
+    if grep -q 'nyx_mirrors=' build.sh; then
+        ok "build.sh counts the target's active mirrors"
+    else
+        bad "build.sh touches the target mirrorlist but never counts the result"
+    fi
+    if grep -q 'nyx_mirrors < 50' build.sh; then
+        ok "build.sh refuses to build when the target mirrorlist is too short"
+    else
+        bad "build.sh has no lower bound on the target's mirror count"
+    fi
+else
+    bad "build.sh never touches the target's mirrorlist"
+fi
 
 # --------------------------------------------------------------------------
 sect "Vendored archives"
@@ -1365,6 +1392,237 @@ if grep -qE '^[[:space:]]*CacheDir[[:space:]]*=' config/live-pacman.conf; then
     warn "CacheDir is set explicitly: ${cd_line}"
 else
     ok "CacheDir is left at the default, which is a real host directory"
+fi
+
+# --- installer execution order ----------------------------------------------
+# The users module copies /etc/skel into the new home directory, and the file
+# that applies the wallpaper on first login arrives in /etc/skel from the
+# nyx-tools package, which the packages module installs. With users running
+# first, the home is made before that file exists and the wallpaper silently
+# never applies. Both halves were individually correct, which is exactly why the
+# static checks kept passing.
+SETTINGS=config/calamares/settings.conf
+if [[ -f "$SETTINGS" ]]; then
+    # Строки, заканчивающиеся двоеточием, — это ключи YAML ("- exec:", "- show:"),
+    # а не модули. Без фильтра они попадают в список как модули с именами exec и
+    # show, и любой порядок потом выглядит нарушенным.
+    exec_seq="$(sed -n '/^[[:space:]]*- exec:/,/^[[:space:]]*- show:/p' "$SETTINGS" \
+                | sed 's/#.*//' \
+                | grep -vE '^[[:space:]]*-[[:space:]]*[a-z@-]+:[[:space:]]*$' \
+                | grep -oE '^[[:space:]]*-[[:space:]]*[a-z@-]+' \
+                | grep -oE '[a-z@-]+$')"
+    i_users=$(printf '%s\n' "$exec_seq" | grep -nx 'users' | cut -d: -f1)
+    i_packages=$(printf '%s\n' "$exec_seq" | grep -nx 'packages' | cut -d: -f1)
+    if [[ -z "$i_users" || -z "$i_packages" ]]; then
+        bad "could not find users and packages in the exec sequence"
+    else
+        if (( i_packages < i_users )); then
+            ok "exec order: packages ($i_packages) before users ($i_users), so /etc/skel is complete first"
+        else
+            bad "exec order: users ($i_users) runs before packages ($i_packages); the first-login wallpaper will never apply"
+        fi
+    fi
+    # unpackfs has to come before both, or there is no target root to work in.
+    i_unpackfs=$(printf '%s\n' "$exec_seq" | grep -nx 'unpackfs' | cut -d: -f1)
+    if [[ -n "$i_unpackfs" && -n "$i_packages" ]] && (( i_unpackfs < i_packages )); then
+        ok "exec order: unpackfs ($i_unpackfs) before packages ($i_packages)"
+    else
+        bad "exec order: packages runs before unpackfs, so there is no root to install into"
+    fi
+
+    # The general rule, which is what the machineid failure actually was.
+    # unpackfs is the only module that populates the target root; partition and
+    # mount run before there is a root at all. Everything else chroots into it,
+    # and an empty mount point has no /usr/bin/ln, no /usr/bin/systemd and no
+    # shell, so any of them placed above unpackfs dies with chroot exit 127 and
+    # a message that points at a binary which is actually present.
+    if [[ -n "$i_unpackfs" ]]; then
+        early=""
+        while IFS= read -r m; do
+            [[ -z "$m" ]] && continue
+            pos=$(printf '%s\n' "$exec_seq" | grep -nx "$m" | cut -d: -f1)
+            [[ -z "$pos" ]] && continue
+            (( pos < i_unpackfs )) || continue
+            case "$m" in
+                partition|mount) ;;
+                *) early="$early $m($pos)" ;;
+            esac
+        done < <(printf '%s\n' "$exec_seq")
+        if [[ -z "$early" ]]; then
+            ok "exec order: only partition and mount run before unpackfs"
+        else
+            bad "exec order:$early run before unpackfs, so they chroot into an empty target"
+        fi
+    fi
+fi
+
+# The autostart entry is packaged, so it must NOT be expected loose in the tree.
+if grep -qE "^[[:space:]]*'etc/skel/\.config/autostart/nyx-wallpaper\.desktop'" build.sh; then
+    bad "build.sh still expects the autostart entry loose in the base rootfs; it comes from the package"
+else
+    ok "the autostart entry is no longer expected loose in the base rootfs"
+fi
+if grep -q 'etc/skel/.config/autostart/nyx-wallpaper.desktop' nyx-tools/PKGBUILD; then
+    ok "the nyx-tools package does carry the autostart entry"
+else
+    bad "the autostart entry is expected nowhere at all"
+fi
+
+# --- repositories named by a config that ships in an image --------------------
+# config/live-pacman.conf is installed as /etc/pacman.conf twice: into the target
+# rootfs and, through archiso's arch-custom template, into the live image. A
+# repository listed in pacman.conf that cannot be synced is a fatal error for
+# pacman rather than a warning, so a path in that file which does not exist in
+# the image breaks every pacman operation in it, ordinary Arch updates included.
+# The target got its copy of the Nyx repository; the live image did not, and the
+# live session could not run pacman at all. Both are the same file, so the check
+# is per image rather than per config.
+if [[ -f config/live-pacman.conf ]]; then
+    # Every file:// path this config names has to exist in both images. Build-time
+    # paths are not in this file: the profile copy is rewritten to the local repo
+    # before pacstrap ever reads it, so everything left here is a runtime path.
+    mapfile -t nyx_servers < <(grep -oE 'Server[[:space:]]*=[[:space:]]*file://[^[:space:]]*' \
+        config/live-pacman.conf | sed 's/.*file:\/\///')
+    if (( ${#nyx_servers[@]} == 0 )); then
+        warn "no file:// repository in config/live-pacman.conf, so there is nothing to cross-check"
+    else
+        for srv in "${nyx_servers[@]}"; do
+            rel="${srv#/}"
+            for tree in BASE_ROOTFS AIROOTFS; do
+                if grep -q "\$$tree/$rel" build.sh; then
+                    ok "\${$tree}/$rel is staged, and the shipped pacman.conf points at it"
+                else
+                    bad "\${$tree}/$rel is named by config/live-pacman.conf but never staged; pacman will fail to sync it in that image"
+                fi
+            done
+        done
+    fi
+fi
+
+# --- the Nyx channel is reported on its own ----------------------------------
+# The report used to classify by "is it CachyOS, otherwise Arch", so nyx-tools
+# was listed as an Arch update. That is not cosmetic: the two need different
+# actions. -Syu updates Arch packages, and it can never see nyx-tools at all,
+# because that package only exists in the local repository after nyx-update-git
+# has built it. Told to run -Syu, the user would be sent to the wrong command.
+UPDATES=nyx-tools/updates
+if [[ -f "$UPDATES" ]]; then
+    if grep -q "NYX_RE=" "$UPDATES" && grep -q 'NYX_RE ]]; then' "$UPDATES"; then
+        ok "nyx-updates classifies the nyx repository separately"
+    else
+        bad "nyx-updates has no separate branch for the nyx repository; nyx-tools will be reported as an Arch update"
+    fi
+    # It has to be tested before the CachyOS branch and before the catch-all,
+    # otherwise the ordering silently swallows it again.
+    nyx_line=$(grep -n 'NYX_RE \]\]' "$UPDATES" | head -1 | cut -d: -f1)
+    c_line=$(grep -n 'CACHYOS_RE \]\]' "$UPDATES" | head -1 | cut -d: -f1)
+    if [[ -n "$nyx_line" && -n "$c_line" ]] && (( nyx_line < c_line )); then
+        ok "the nyx branch is tested before the CachyOS branch (line $nyx_line before $c_line)"
+    else
+        bad "the nyx branch is not tested first; ordering puts it in the wrong bucket"
+    fi
+    if grep -q 'nyx_n' "$UPDATES" && grep -q 'total=\$((' "$UPDATES"; then
+        if grep -qE 'total=\$\(\( *arch_n \+ cachy_n \+ nyx_n \+ aur_n \)\)' "$UPDATES"; then
+            ok "nyx updates are counted in the total"
+        else
+            bad "nyx_n is not included in the update total"
+        fi
+    else
+        bad "the nyx counter is missing"
+    fi
+    if grep -q 'nyx-update-git' "$UPDATES"; then
+        ok "the report says which command actually brings a nyx-tools update in"
+    else
+        bad "the report points at -Syu for nyx-tools, which cannot fetch it"
+    fi
+fi
+
+# --- version comparison in nyx-update-git -------------------------------------
+# The report took the longest "-*" prefix off the package filename, which is the
+# architecture: "x86_64" was then compared against what pacman -Q prints,
+# "2026.09.01.15-1". Those can never be equal, so the tool announced an update on
+# every system, including fully current ones.
+GIT_UPDATER=config/base-rootfs-overlay/usr/local/sbin/nyx-update-git
+if [[ -f "$GIT_UPDATER" ]]; then
+    if grep -q '##\*-' "$GIT_UPDATER"; then
+        bad "nyx-update-git still strips the longest dash prefix and gets the architecture instead of the version"
+    else
+        ok "nyx-update-git no longer parses the package version as the architecture"
+    fi
+    # pkgver-pkgrel is what pacman -Q prints, so the parse has to end there.
+    if grep -q 'new="\${new%-' "$GIT_UPDATER" && grep -q '%.pkg.tar.zst' "$GIT_UPDATER"; then
+        ok "nyx-update-git reduces the filename to pkgver-pkgrel, matching pacman -Q"
+    else
+        bad "nyx-update-git does not reduce the filename to pkgver-pkgrel"
+    fi
+    # The comparison is worthless if the tool builds a version that cannot be
+    # ordered against the installed one. Commit count grows monotonically on a
+    # linear history, which is what makes this safe.
+    if grep -q 'RELEASE\.\$ncount' "$GIT_UPDATER" || grep -qE 'nver="\$RELEASE\.\$n' "$GIT_UPDATER"; then
+        ok "the built version is release plus commit count, so later commits are newer"
+    else
+        warn "cannot see how nyx-update-git derives the package version"
+    fi
+fi
+
+# --- password rules ----------------------------------------------------------
+# The user asked for a single character to be accepted. Four independent switches
+# enforce length, and relaxing only the obvious one leaves the password rejected
+# with no visible reason: the QML field refuses to submit, pwquality rejects it,
+# minclass=2 cannot be satisfied by a one character password at all, and
+# allowWeakPasswords is the master switch that permits failing the checks.
+UCONF=config/calamares/modules/users.conf
+if [[ -f "$UCONF" ]]; then
+    if grep -qE '^[[:space:]]*minLength:[[:space:]]*1[[:space:]]*$' "$UCONF"; then
+        ok "password: minLength is 1, a one character password can be submitted"
+    else
+        bad "password: minLength is not 1, the installer field still refuses short passwords"
+    fi
+    if grep -qE '^[[:space:]]*-[[:space:]]*minlen=1[[:space:]]*$' "$UCONF"; then
+        ok "password: libpwquality minlen is 1"
+    else
+        bad "password: libpwquality still carries a minlen above 1"
+    fi
+    if grep -qE '^[[:space:]]*-[[:space:]]*minclass=1[[:space:]]*$' "$UCONF"; then
+        ok "password: minclass is 1; minclass=2 cannot be met by a one character password"
+    else
+        bad "password: minclass is still 2, which a one character password can never satisfy"
+    fi
+    if grep -qE '^[[:space:]]*allowWeakPasswords:[[:space:]]*true[[:space:]]*$' "$UCONF" &&
+       grep -qE '^[[:space:]]*allowWeakPasswordsDefault:[[:space:]]*true[[:space:]]*$' "$UCONF"; then
+        ok "password: allowWeakPasswords is on, so a password failing the checks is permitted"
+    else
+        bad "password: allowWeakPasswords is off and overrides the relaxed rules above"
+    fi
+fi
+
+# --- hostname offered by the installer ---------------------------------------
+# The hostname field is pre-filled from users.conf, while /etc/hostname in the
+# base rootfs is written separately by build.sh. When the two disagree the
+# installer offers a name the rest of the image does not assume, and the user has
+# to retype it on every install. They must be the same string.
+UCONF2=config/calamares/modules/users.conf
+if [[ -f "$UCONF2" ]]; then
+    tmpl=$(sed -n 's/^[[:space:]]*template:[[:space:]]*"\([^"]*\)".*/\1/p' "$UCONF2" | head -1)
+    if [[ "$tmpl" == "nyx" ]]; then
+        ok "the installer offers hostname 'nyx', matching /etc/hostname"
+    else
+        bad "the installer offers hostname '$tmpl', but the image uses 'nyx'; they must match"
+    fi
+    # Comment lines are stripped before searching. The note explaining what the
+    # template used to be mentions nyxlinux on purpose, and a check that failed
+    # on the word in a comment would have to be deleted the moment anyone
+    # documented the change.
+    if sed 's/#.*//' "$UCONF2" | grep -q 'nyxlinux'; then
+        bad "an active line in users.conf still sets nyxlinux somewhere"
+    else
+        ok "no active line in users.conf sets nyxlinux"
+    fi
+    if grep -qE "^printf 'nyx" build.sh; then
+        ok "build.sh writes nyx into /etc/hostname for both images"
+    else
+        bad "build.sh no longer sets the hostname to nyx"
+    fi
 fi
 
 # --------------------------------------------------------------------------
