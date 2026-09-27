@@ -1,0 +1,78 @@
+Nyx Linux
+Copyright the Nyx Linux contributors
+
+This product is licensed under the Apache License, Version 2.0. The full text
+is in the LICENSE file at the root of this repository.
+
+--------------------------------------------------------------------------
+Our own work
+--------------------------------------------------------------------------
+
+Everything in this repository that is not listed below is covered by the
+Apache License 2.0: the build script, the Calamares module configuration, the
+installer branding, the nyx-tools helpers, the validation script, and the
+logo generator.
+
+The logo is original artwork. It is a crescent moon drawn as a stack of
+horizontal bars and is produced entirely by scripts/make-logo.py; no part of it
+is traced from, adapted from, or derived from any existing character, logo, or
+raster. An earlier revision of this project used artwork adapted from a
+third-party project as its mark. That artwork was removed, together with every
+file generated from it, precisely because a distribution cannot redistribute
+someone else's artwork as its own identity, and because doing so put the
+project's branding on uncertain legal ground.
+
+The braille wordmark in config/fastfetch/nyx.ascii is likewise original.
+
+--------------------------------------------------------------------------
+Vendored third-party source
+--------------------------------------------------------------------------
+
+These are redistributed here as unmodified upstream release tarballs, so that a
+build can be reproduced without fetching them at build time.
+
+  vendor/archiso-v90.tar.gz
+      archiso, by the archiso developers.
+      Licensed under the GNU General Public License, version 3.
+      A copy is in licenses/archiso-GPL-3.0.txt, taken from the tarball itself.
+
+  vendor/calamares-v3.4.3.tar.gz
+      Calamares, by the Calamares developers.
+      Licensed under the GNU General Public License, version 3 or later.
+      Calamares bundles further third-party components under their own terms.
+      Those licence texts are reproduced verbatim from the tarball:
+
+        licenses/calamares-BSD-2-Clause.txt
+        licenses/calamares-CC-BY-4.0.txt
+        licenses/calamares-CC0-1.0.txt
+        licenses/calamares-GPL-3.0-or-later.txt
+        licenses/calamares-LGPL-2.1-only.txt
+        licenses/calamares-LGPL-3.0-or-later.txt
+        licenses/calamares-MIT.txt
+
+      The directory config/calamares/branding/archlinux/ is named after the
+      Arch Linux distribution because that is where the installer looks for
+      branding by default. The files in it were written for this project and
+      are covered by the Apache License 2.0 above.
+
+--------------------------------------------------------------------------
+Third-party material referenced
+--------------------------------------------------------------------------
+
+  The module layout of the default fastfetch preset follows the community
+  preset "nyarch" from the fastfetch preset collection by Bina, reused for the
+  way it puts user@host first. The preset itself, config/fastfetch/nyx.jsonc,
+  is our own file.
+
+--------------------------------------------------------------------------
+Trademarks
+--------------------------------------------------------------------------
+
+Arch Linux and CachyOS are the trademarks of their respective projects. Nyx
+Linux is an independent derivative distribution. It is not affiliated with,
+endorsed by, or presented as an official image of Arch Linux or CachyOS, and
+neither project has reviewed or approved it.
+
+`ID=arch` is set in the os-release of the installed system on purpose. It is a
+factual statement about package compatibility, not a claim of affiliation: it is
+what lets an unmodified Arch package install cleanly on this distribution.
