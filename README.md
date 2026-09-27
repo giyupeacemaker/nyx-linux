@@ -42,7 +42,7 @@ Download the image and check it against the published checksum before writing
 it to a USB stick:
 
 ```bash
-sha256sum -c nyx-linux-cachyos-calamares-2026.09.01-x86_64.iso.sha256
+sha256sum -c nyx-linux-alpha-01.09.2026-x86_64.iso.sha256
 ```
 
 Use a DD-mode writer (Rufus, balenaEtcher) so the image is written verbatim

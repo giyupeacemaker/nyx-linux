@@ -95,8 +95,8 @@ sudo env KEEP_BUILD=1 JOBS=4 bash build.sh
 Результат появится в общей папке:
 
 ```text
-out/nyx-linux-cachyos-calamares-2026.09.01-x86_64.iso
-out/nyx-linux-cachyos-calamares-2026.09.01-x86_64.iso.sha256
+out/nyx-linux-alpha-01.09.2026-x86_64.iso
+out/nyx-linux-alpha-01.09.2026-x86_64.iso.sha256
 out/build-2026.09.01.log
 ```
 
