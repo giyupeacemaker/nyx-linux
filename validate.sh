@@ -787,6 +787,116 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# The preview tiles are checked as strictly as anything else, because a tile that
+# renders wrong is a broken screen in the middle of the installation, and the
+# person who finds it is the one picking a desktop.
+#
+# Three rules, each one a mistake that was actually made here:
+#   no text inside a tile   real screenshots are not captioned, and Calamares
+#                           draws each choice's own label in its own theme, where
+#                           the contrast is already right
+#   a light plate           the tiles have to read as a picture of a desktop
+#   one tile per choice     thirteen choices shared desktop-generic.svg, so
+#                           choosing anything but KDE looked like choosing KDE
+sect "Installer preview tiles"
+# All of this is one pass by one python, and that is on purpose twice over.
+#
+# The first version called python3 twice per tile, thirty-two tiles, sixty-four
+# interpreter starts, which is why validation crawled. The second version ran the
+# three checks as separate python3 -c programs, and one of them ended in
+# print(f"{k}: {\", \".join(v)}") with backslash-escaped quotes inside an f-string
+# nested in a single-quoted bash string. That killed the run: the log stopped
+# after two of three checks with no summary line at all, and code 1, which reads
+# as a failing project rather than as a broken check.
+#
+# A heredoc has no quoting problem to hit, and one pass costs one interpreter.
+tile_report=$(python3 <<'PY' 2>/dev/null
+import re, pathlib
+import xml.etree.ElementTree as ET
+import collections
+
+BRAND = pathlib.Path("config/calamares/branding/archlinux")
+MODS = pathlib.Path("config/calamares/modules")
+
+tiles = sorted(BRAND.glob("desktop-*.svg")) + sorted(BRAND.glob("extras-*.svg"))
+bad = []
+warned = []
+contents = collections.Counter()
+for t in tiles:
+    s = t.read_text(encoding="utf-8")
+    contents[s] += 1
+    try:
+        ET.parse(t)
+    except Exception as exc:
+        bad.append("not valid XML: %s: %s" % (t.name, exc))
+        continue
+    if "<text" in s:
+        bad.append("carries text: %s; the installer labels the choice itself" % t.name)
+    m = re.findall(r'stop-color="(#[0-9a-fA-F]{6})"', s)
+    if not m:
+        warned.append("no gradient, cannot tell whether the plate is light: %s" % t.name)
+    else:
+        r, g, b = (int(m[0][i:i + 2], 16) for i in (1, 3, 5))
+        if (r + g + b) / 3 < 200:
+            bad.append("dark plate: %s" % t.name)
+
+for dup, n in contents.items():
+    if n > 1:
+        bad.append("%d tiles are byte-identical, so those choices look alike" % n)
+
+used = collections.defaultdict(list)
+for f in sorted(MODS.glob("packagechooser-*.conf")):
+    cur = None
+    for line in f.read_text(encoding="utf-8").splitlines():
+        mid = re.match(r"\s*-\s*id:\s*(\S+)\s*$", line)
+        if mid:
+            cur = mid.group(1)
+            continue
+        msh = re.search(r'screenshot:\s*"/etc/calamares/branding/archlinux/([^"]+)"', line)
+        if msh and cur:
+            used[msh.group(1)].append(cur)
+            if not (BRAND / msh.group(1)).exists():
+                bad.append("%s in %s points at %s, which does not exist" % (cur, f.name, msh.group(1)))
+shared = [(k, v) for k, v in sorted(used.items()) if len(v) > 1]
+
+# The verdict is decided here, not in the shell. The first version printed totals
+# as "TOTALS\t32\t0\t37" and the shell read three fields, so the last one came
+# back as "0\t37" and then went into [[ -eq ]], which died with an arithmetic
+# error and took the "no two choices share a tile" check with it. Counting and
+# comparing belong to the program that has the data; the shell only relays.
+if not tiles:
+    print("M\tbad\tno preview tiles found at all, so this check proved nothing")
+for b in bad:
+    print("M\tbad\t%s" % b)
+for w in warned:
+    print("M\twarn\t%s" % w)
+if tiles and not bad:
+    print("M\tok\tall %d preview tiles are valid XML, carry no text and sit on a light plate" % len(tiles))
+if used and not shared:
+    print("M\tok\tno two choices share a preview tile, so the list is telling them apart")
+if not used:
+    print("M\twarn\tno chooser entry declares a preview tile, so none of this was checked")
+PY
+)
+if [[ -z "$tile_report" ]]; then
+    bad "the preview tile check produced no output at all, so it proved nothing"
+else
+    t_bad=0
+    t_ok=0
+    while IFS=$'\t' read -r tag level msg; do
+        [[ "$tag" == 'M' ]] || continue
+        case "$level" in
+            ok)   ok "$msg";   t_ok=$((t_ok + 1)) ;;
+            warn) warn "$msg" ;;
+            bad)  bad "$msg";  t_bad=$((t_bad + 1)) ;;
+        esac
+    done <<<"$tile_report"
+    if (( t_ok == 0 && t_bad == 0 )); then
+        bad "the preview tile check said nothing at all, which is not a pass"
+    fi
+fi
+
+# --------------------------------------------------------------------------
 sect "Installer package choices exist"
 # A typo in a packagechooser list does not fail the build. It fails silently at
 # install time, on the machine of somebody who picked that option. Everything

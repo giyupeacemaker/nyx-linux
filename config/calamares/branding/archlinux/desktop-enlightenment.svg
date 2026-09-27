@@ -2,22 +2,22 @@
   <defs><linearGradient id="g" x2="1" y2="1"><stop stop-color="#ffffff"/><stop offset="1" stop-color="#f1f5f9"/></linearGradient></defs>
   <rect width="480" height="270" rx="18" fill="url(#g)"/>
   <rect x="0.5" y="0.5" width="479" height="269" rx="18" fill="none" stroke="#cbd5e1"/>
-  <circle cx="420" cy="34" r="120" fill="#15803d" opacity="0.10"/>
+  <circle cx="420" cy="34" r="120" fill="#7e22ce" opacity="0.10"/>
   <rect x="0" y="0" width="480" height="24" rx="0" fill="#e2e8f0"/>
-  <circle cx="22" cy="12" r="4" fill="#15803d" opacity="0.9"/>
-  <circle cx="38" cy="12" r="4" fill="#15803d" opacity="0.5"/>
-  <circle cx="54" cy="12" r="4" fill="#15803d" opacity="0.5"/>
+  <circle cx="22" cy="12" r="4" fill="#7e22ce" opacity="0.9"/>
+  <circle cx="38" cy="12" r="4" fill="#7e22ce" opacity="0.5"/>
+  <circle cx="54" cy="12" r="4" fill="#7e22ce" opacity="0.5"/>
   <rect x="80" y="8" width="110" height="8" rx="4" fill="#ffffff" opacity="0.9"/>
   <rect x="406" y="8" width="50" height="8" rx="4" fill="#ffffff" opacity="0.8"/>
   <rect x="24" y="40" width="186" height="172" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
-  <rect x="24" y="40" width="186" height="6" rx="3" fill="#15803d" opacity="0.3"/>
+  <rect x="24" y="40" width="186" height="6" rx="3" fill="#7e22ce" opacity="0.3"/>
   <rect x="34" y="58" width="166" height="9" rx="4" fill="#94a3b8" opacity="0.6"/>
   <rect x="34" y="80" width="158" height="9" rx="4" fill="#94a3b8" opacity="0.4"/>
   <rect x="34" y="102" width="150" height="9" rx="4" fill="#94a3b8" opacity="0.3"/>
   <rect x="34" y="124" width="142" height="9" rx="4" fill="#94a3b8" opacity="0.2"/>
   <rect x="34" y="146" width="134" height="9" rx="4" fill="#94a3b8" opacity="0.1"/>
-  <rect x="226" y="48" width="230" height="156" rx="8" fill="#ffffff" stroke="#15803d" stroke-width="1"/>
-  <rect x="226" y="48" width="230" height="6" rx="3" fill="#15803d" opacity="0.8"/>
+  <rect x="226" y="48" width="230" height="156" rx="8" fill="#ffffff" stroke="#7e22ce" stroke-width="1"/>
+  <rect x="226" y="48" width="230" height="6" rx="3" fill="#7e22ce" opacity="0.8"/>
   <rect x="236" y="66" width="210" height="9" rx="4" fill="#94a3b8" opacity="0.6"/>
   <rect x="236" y="88" width="202" height="9" rx="4" fill="#94a3b8" opacity="0.4"/>
   <rect x="236" y="110" width="194" height="9" rx="4" fill="#94a3b8" opacity="0.3"/>
