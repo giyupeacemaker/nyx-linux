@@ -106,11 +106,20 @@ build_package() {
 }
 
 report() {
-    local inst new
+    local inst new pkg
     inst="$(installed_version)"
-    new=$(ls -1t "$LOCAL_REPO"/nyx-tools-*.pkg.tar.zst 2>/dev/null | head -1)
-    new="${new##*-}"
-    new="${new%.pkg.tar.zst}"
+    pkg=$(ls -1t "$LOCAL_REPO"/nyx-tools-*.pkg.tar.zst 2>/dev/null | head -1)
+    # pacman -Q prints pkgver-pkgrel, so the comparison has to end up as exactly
+    # that. Stripping the longest "-*" prefix instead took everything up to the
+    # final dash and left the architecture: "x86_64" was compared against
+    # "2026.09.01.15-1", never matched, and the tool claimed an update was
+    # pending on a system that was already current.
+    new=""
+    if [[ -n "$pkg" ]]; then
+        new="${pkg#nyx-tools-}"       # 2026.09.01.15-1-x86_64.pkg.tar.zst
+        new="${new%.pkg.tar.zst}"      # 2026.09.01.15-1-x86_64
+        new="${new%-*}"               # 2026.09.01.15-1
+    fi
 
     printf '\n'
     head_ "Дальше — твоё решение"

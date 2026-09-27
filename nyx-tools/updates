@@ -24,13 +24,19 @@ readonly MAX_LIST=40
 # Repository name prefixes treated as the CachyOS / kernel channel.
 readonly CACHYOS_RE='^cachyos'
 
+# Our own repository. It gets its own line in the report instead of being folded
+# into Arch, which is what used to happen: anything that was not CachyOS landed
+# in the Arch bucket, so nyx-tools was reported as an Arch update. The user
+# cannot act on that the Arch way, because the fix is nyx-update-git, not -Syu.
+readonly NYX_RE='^nyx'
+
 # Kernel packages: a CachyOS kernel update requires a reboot to take effect.
 readonly KERNEL_RE='^(linux-cachyos|linux-cachyos-[a-z0-9]+|linux-[0-9][0-9.]*(-lts)?)$'
 
-c_reset=''; c_dim=''; c_arch=''; c_cachy=''; c_aur=''; c_kernel=''; c_ok=''; c_warn=''
+c_reset=''; c_dim=''; c_arch=''; c_cachy=''; c_nyx=''; c_aur=''; c_kernel=''; c_ok=''; c_warn=''
 if [[ -t 1 ]]; then
     c_reset=$'\033[0m'; c_dim=$'\033[2m'; c_arch=$'\033[38;5;39m'
-    c_cachy=$'\033[38;5;170m'; c_aur=$'\033[38;5;179m'
+    c_cachy=$'\033[38;5;170m'; c_nyx=$'\033[38;5;141m'; c_aur=$'\033[38;5;179m'
     c_kernel=$'\033[1;38;5;203m'; c_ok=$'\033[38;5;114m'; c_warn=$'\033[38;5;215m'
 fi
 
@@ -148,13 +154,15 @@ main() {
     fi
 
     # Join updates with their repositories.
-    local -i arch_n=0 cachy_n=0 aur_n=0 kernel_n=0
-    local -a arch_list=() cachy_list=() aur_list=() kernel_list=()
+    local -i arch_n=0 cachy_n=0 nyx_n=0 aur_n=0 kernel_n=0
+    local -a arch_list=() cachy_list=() nyx_list=() aur_list=() kernel_list=()
     for i in "${!updates[@]}"; do
         # AUR lines arrive in their own array, so everything in "updates" here
         # is an official repository package and gets classified by repo name.
         local line="${updates[$i]}" repo="${repo_map[$i]:-core}" name="${updates[$i]%% *}"
-        if [[ $repo =~ $CACHYOS_RE ]]; then
+        if [[ $repo =~ $NYX_RE ]]; then
+            (( nyx_n++ )); nyx_list+=("$line")
+        elif [[ $repo =~ $CACHYOS_RE ]]; then
             (( cachy_n++ )); cachy_list+=("$line")
         else
             (( arch_n++ )); arch_list+=("$line")
@@ -167,7 +175,7 @@ main() {
         (( aur_n++ )); aur_list+=("$line")
     done
 
-    local -i total=$(( arch_n + cachy_n + aur_n ))
+    local -i total=$(( arch_n + cachy_n + nyx_n + aur_n ))
 
     # ----------------------------------------------------------------------
     # Terminal report
@@ -188,6 +196,15 @@ main() {
             printf '\n%sCachyOS%s (%d)\n' "$c_cachy" "$c_reset" "$cachy_n"
             (( list )) && printf '  %s\n' "${cachy_list[@]}" | head -n "$MAX_LIST" \
                         || printf '  %sиз них: %s\n' "$c_dim" "${cachy_list[0]%% *}"
+        fi
+        if (( nyx_n )); then
+            printf '\n%sNyx — nyx-tools%s (%d)\n' "$c_nyx" "$c_reset" "$nyx_n"
+            (( list )) && printf '  %s\n' "${nyx_list[@]}" | head -n "$MAX_LIST" \
+                        || printf '  %sиз них: %s\n' "$c_dim" "${nyx_list[0]%% *}"
+            # These are not in any remote repository yet. The package has to be
+            # built from the GitHub checkout into the local one first, and
+            # -Syu on its own will never see it.
+            printf '  %sобновление появится здесь после nyx-update-git%s\n' "$c_dim" "$c_reset"
         fi
         if (( aur_n )); then
             printf '\n%sAUR%s (%d) %s— ставится paru/yay вручную%s\n' \
@@ -210,9 +227,12 @@ main() {
     # Notification: only when something is pending.
     # ----------------------------------------------------------------------
     if [[ $mode != status ]] && command -v notify-send >/dev/null 2>&1 && (( total > 0 )); then
-        local body="Arch: ${arch_n}  ·  CachyOS: ${cachy_n}  ·  AUR: ${aur_n}"
+        local body="Arch: ${arch_n}  ·  CachyOS: ${cachy_n}  ·  Nyx: ${nyx_n}  ·  AUR: ${aur_n}"
         if (( kernel_n )); then
             body+=$'\nЯдро обновляется — нужна перезагрузка'
+        fi
+        if (( nyx_n )); then
+            body+=$'\nnyx-tools: сначала nyx-update-git'
         fi
         local urgency=normal
         (( kernel_n )) && urgency=critical
