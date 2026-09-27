@@ -7,12 +7,27 @@
 # are revoked, and the Arch master keys read as expired or revoked because
 # nothing anchors the trust database.
 #
-# /etc/pacman.conf asks core and extra for SigLevel = Required DatabaseOptional.
-# Both databases are signed, DatabaseOptional means a present signature has to
-# verify, and with no trusted key pacman is obliged to refuse. That refusal was
-# the "pacman -Sy returned error code 1" that stopped every installation, while
-# the identical command in the live session succeeded because there the keyring
-# lives on a writable tmpfs and populates itself on first use.
+# Two things are wrong in the target and both have to be fixed, so this script
+# populates two keyrings, not one.
+#
+# First, /etc/pacman.conf asks core and extra for SigLevel = Required
+# DatabaseOptional. Both databases are signed, DatabaseOptional means a present
+# signature has to verify, and with no trusted key pacman is obliged to refuse.
+#
+# Second, and this is the one that actually produced the failure: the CachyOS
+# keyring is never imported by anything. Its files ship in the target under
+# /usr/share/pacman/keyrings/, but pacstrap only populates keyrings for packages
+# in the base group, so the CachyOS key stayed unknown and pacman asked about it
+# interactively, which the packages module cannot answer. The error was:
+#
+#   error: cachyos: key "882DCFE4...F3B607488DB35A47" is unknown
+#   :: Import PGP key 882DCFE4...F3B607488DB35A47? [Y/n]
+#   error: failed to synchronize all databases (unexpected error)
+#
+# with exit code 1, which is the "pacman -Sy returned error code 1" that ended
+# every installation. The same command in the live session succeeded because
+# there the keyring lives on a writable tmpfs and populates itself on first use.
+# Populating only archlinux is not enough, and neither keyring alone is enough.
 #
 # This lives in a file rather than inline in the Calamares module because
 # shellprocess substitutes variables in the command string and treats every
@@ -47,9 +62,60 @@ if ! pacman-key --populate archlinux; then
     warn "pacman-key --populate archlinux failed; continuing and checking the result"
 fi
 
+# CachyOS is the one that actually stopped the installation, and populating only
+# the Arch keys does not fix it.
+#
+# The CachyOS keyring ships in the target at /usr/share/pacman/keyrings/ as
+# cachyos.gpg and cachyos-trusted, and nothing imported them: pacstrap never
+# populates a keyring for a repository outside the base group. So pacman reached
+# the signed cachyos database, found the key unknown, and asked interactively:
+#
+#   error: cachyos: key "882DCFE48E2051D48E2562ABF3B607488DB35A47" is unknown
+#   :: Import PGP key 882DCFE48E2051D48E2562ABF3B607488DB35A47? [Y/n]
+#   error: failed to synchronize all databases (unexpected error)
+#
+# The packages module does not pass --noconfirm, so the question got no answer
+# and pacman exited 1. That is the "pacman -Sy returned error code 1" that ended
+# every installation, and it had nothing to do with mirrors or with DNS.
+log "populating the CachyOS key"
+if ! pacman-key --populate cachyos; then
+    warn "pacman-key --populate cachyos failed; pacman may still ask about the key"
+fi
+
 total=$(count_keys)
 trusted=$(count_trusted)
 log "keyring: ${total} keys, ${trusted} trusted"
+
+# Now that the CachyOS key is imported, the relaxation in /etc/pacman.conf is no
+# longer needed, and leaving it in place would mean the installed system verifies
+# nothing from CachyOS while appearing to.
+#
+# The relaxation cannot simply be removed from config/live-pacman.conf, because
+# that one file is also the pacman.conf of the build host and of the live image.
+# build.sh drops the CachyOS keyring files into the image but never imports them
+# into the build host's own keyring, so the build depends on the relaxed level
+# staying there. Tightening it there would break the build, which is why the
+# tightening happens here, in the target, and only once the key is proven present.
+#
+# Every package in the CachyOS database is signed by a single key,
+# 882DCFE48E2051D48E2562ABF3B607488DB35A47, verified by enumerating the %PGPSIG%
+# field of all 830 entries in cachyos.db. So requiring signatures is safe for the
+# whole repository, not just for the packages that happened to be sampled.
+if [ "$trusted" -gt 0 ] && gpg --homedir "$KEYDIR" --list-keys \
+        882DCFE48E2051D48E2562ABF3B607488DB35A47 >/dev/null 2>&1; then
+    if sed -i '/^\[cachyos\]/,/^\[/ s/^SigLevel = .*/SigLevel = Required DatabaseRequired/' \
+           /etc/pacman.conf; then
+        if grep -q '^SigLevel = Required DatabaseRequired$' /etc/pacman.conf; then
+            log "CachyOS signatures are now required; its key is trusted"
+        else
+            warn "could not tighten the CachyOS SigLevel section"
+        fi
+    else
+        warn "could not edit /etc/pacman.conf to tighten the CachyOS SigLevel"
+    fi
+else
+    warn "the CachyOS key is not available, leaving its SigLevel as it is"
+fi
 
 if [ "$trusted" -gt 0 ]; then
     log "keyring is populated, package signatures will be verified"

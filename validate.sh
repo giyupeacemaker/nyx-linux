@@ -1567,8 +1567,11 @@ if [[ -f "$SETTINGS" ]]; then
     # A keyring has to be populated before packages, or pacman -Sy is refused.
     # pacstrap installs archlinux-keyring but never runs pacman-key --populate in
     # the target, so it starts with 183 keys and none of them trusted, while
-    # core and extra ask for SigLevel = Required. This was the only bug that ever
-    # stopped an installation from finishing.
+    # core and extra ask for SigLevel = Required. That alone is a real defect, but
+    # it was NOT the one that stopped installations: fixing it changed the keyring
+    # from 0 to 84 trusted keys and the installation still failed with the same
+    # "pacman -Sy returned error code 1". The cause was the unimported CachyOS
+    # key, which is checked separately below.
     KEYRING_CONF=config/calamares/modules/shellprocess-keyring.conf
     KEYRING_SCRIPT=config/base-rootfs-overlay/usr/local/sbin/nyx-prepare-keyring
     if [[ -f "$KEYRING_CONF" ]]; then
@@ -1600,6 +1603,36 @@ if [[ -f "$SETTINGS" ]]; then
                 ok "the script initialises and populates the keyring"
             else
                 bad "the script does not initialise and populate the keyring"
+            fi
+            # Populating only the Arch keyring does not make pacman work. The
+            # CachyOS key was never imported, so pacman reached the signed
+            # database, did not know the key, and asked about it interactively:
+            #   :: Import PGP key 882DCFE4...F3B607488DB35A47? [Y/n]
+            # with no answer available during installation, and the install ended
+            # with "failed to synchronize all databases". A script that populates
+            # archlinux alone is exactly the bug this check exists to catch.
+            if grep -q 'pacman-key --populate cachyos' "$KEYRING_SCRIPT"; then
+                ok "the script populates the CachyOS keyring too"
+            else
+                bad "the script populates only archlinux; pacman will ask about the CachyOS key and the install will fail"
+            fi
+            # Once the CachyOS key is imported, the installed system should not
+            # keep the relaxed level the live image and the build host need. All
+            # 830 packages in the CachyOS database are signed by one key that is
+            # verified present first, so requiring signatures is safe here.
+            if grep -q 'Required DatabaseRequired' "$KEYRING_SCRIPT" && \
+               grep -q '\^\\\[cachyos\\\]' "$KEYRING_SCRIPT"; then
+                ok "the script tightens the CachyOS SigLevel in the target"
+            else
+                bad "the script leaves CachyOS at Optional TrustAll in the installed system, so its packages are never verified"
+            fi
+            # The relaxed level has to stay in the shared pacman.conf: that file is
+            # also the build host's, and build.sh never imports the CachyOS keyring
+            # into the build host, so the build depends on the relaxation.
+            if grep -q '^SigLevel = Optional TrustAll$' config/live-pacman.conf; then
+                ok "the shared pacman.conf keeps the relaxed level the build host needs"
+            else
+                bad "the shared pacman.conf was tightened; the build host has no CachyOS key and the build will fail"
             fi
             # A step that cannot tell success from failure is not a step.
             if grep -q 'count_trusted' "$KEYRING_SCRIPT" && \
