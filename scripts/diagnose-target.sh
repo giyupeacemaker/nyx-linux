@@ -8,13 +8,16 @@
 #
 #   sudo bash diagnose-target.sh
 #
-# Вывод потоковый, с таймаутом: прошлый вариант перехватывал вывод подстановкой
-# и печатал его только после возврата команды, из-за чего на экране была
-# пустота и нельзя было отличить работу от зависания.
+# ВАЖНО, и это стоило двух прогонов: команда pacman выполняется ВНУТРИ chroot,
+# поэтому любой путь, который ей передаётся, должен существовать внутри
+# целевой системы. Каталог, созданный на хосте, в chroot не виден: свой /tmp
+# у него другой. Из-за этого pacman падал с "failed to resolve path ... passed
+# to --dbpath" за пять секунд, и разделы с зеркалами измеряли этот дефект,
+# а не поведение зеркал.
 
 set -uo pipefail
 
-SQUASH=/usr/share/archlive/base-rootfs.squashfs
+SQUASH="${SQUASH:-/usr/share/archlive/base-rootfs.squashfs}"
 T=/tmp/nyx-target
 LOG=/tmp/nyx-pacman.log
 LIMIT="${LIMIT:-150}"
@@ -28,8 +31,6 @@ if [[ ! -f "$SQUASH" ]]; then
 fi
 
 cleanup() {
-    # -l -f: снимать приходится рекурсивно и силой. Прерванный прогон оставляет
-    # примонтированный /dev, и обычный rm через него не проходит.
     for m in run dev sys proc; do
         mountpoint -q "$T/$m" 2>/dev/null && umount -Rlf "$T/$m" 2>/dev/null
     done
@@ -41,9 +42,8 @@ say "0. исходник"
 note "$(stat -c %s "$SQUASH") байт"
 
 say "1. убираю остатки прошлого прогона"
-# Каталог /tmp/nyx-target/dev после прерывания остаётся точкой монтирования,
-# и rm -rf на нём падает с "Operation not permitted". Это стоило одного
-# перезапуска, поэтому снимаем остатки до распаковки, а не после.
+# bind-монтирование /dev переживает Ctrl+C, и rm -rf через точку монтирования
+# не проходит, поэтому остатки снимаются до распаковки, а не только на выходе.
 if [[ -d "$T" ]] || mountpoint -q "$T/dev" 2>/dev/null; then
     note "найдены остатки, снимаю"
     cleanup
@@ -86,21 +86,23 @@ IN 'for h in geo.mirror.pkgbuild.com mirror.cachyos.org; do
     done
     ip -brief addr 2>/dev/null | awk "{print \"  \" \$1, \$3}" | head -3'
 
-say "5. сколько зеркал в списке целевой системы"
-note "активных серверов: $(IN 'grep -c "^Server" /etc/pacman.d/mirrorlist' 2>/dev/null | tr -d ' \r')"
-IN 'grep "^Server" /etc/pacman.d/mirrorlist | head -5 | sed "s/^/    /"'
+say "5. состояние базы pacman в целевой системе"
+# Синхронизированных баз быть не должно: pacstrap их не наполняет, значит
+# каждый pacman -Sy ниже действительно качает базы с зеркал, а не сверяется
+# с уже скачанными. Если базы непустые, тест ничего не проверяет.
+IN 'echo "  /var/lib/pacman/sync:"; ls -1 /var/lib/pacman/sync 2>/dev/null | sed "s/^/    /"
+    echo "  файлов в sync: $(ls -1 /var/lib/pacman/sync 2>/dev/null | wc -l)"'
 
-# Запускает pacman с потоковым выводом в файл и таймаутом. Пока идёт, каждые
-# пять секунд печатается состояние: иначе пустота на экране неотличима от
-# зависания, и это была главная ошибка первой версии.
+say "6. ГЛАВНОЕ: pacman -Sy на полном списке зеркал, потоковый вывод"
+# Без --dbpath: используется настоящая база целевой системы, у pacstrap она
+# пуста, и отдельный каталог не нужен. Заодно это ближе к тому, что делает
+# установщик, который тоже работает с её штатной базой.
 run_pacman() {
     local label="$1" conf="$2" secs="$3"
-    local db=/tmp/dbx
-    rm -rf "$db"; mkdir -p "$db"
     : > "$LOG"
     note "--- $label (таймаут ${secs}s) ---"
     ( chroot "$T" /bin/bash -c "
-          out=\$(timeout $secs pacman --config $conf --dbpath $db --logfile /dev/null -Sy --verbose 2>&1)
+          out=\$(timeout $secs pacman --config $conf --logfile /dev/null -Sy --verbose 2>&1)
           echo \"__RC__\$?\"
       " >"$LOG" 2>&1 ) &
     local pid=$!
@@ -119,23 +121,20 @@ run_pacman() {
         fi
     done
     wait "$pid" 2>/dev/null
-    rm -rf "$db"
     printf '  вывод: %s\n' "$label"
     if [[ -s "$LOG" ]]; then
-        tail -25 "$LOG" | sed 's/^/    /'
+        tail -30 "$LOG" | sed 's/^/    /'
     else
         note "(пусто: pacman не напечатал ни строки)"
     fi
     rm -f "$LOG"
 }
 
-say "6. ГЛАВНОЕ: pacman -Sy на полном списке зеркал, потоковый вывод"
-# Ровно то, что делает установщик. Если здесь завис, значит завис на зеркале.
-run_pacman "полный список" /etc/pacman.conf "$LIMIT"
+run_pacman "полный список, 425 зеркал" /etc/pacman.conf "$LIMIT"
 
 say "7. ТО ЖЕ на трёх зеркалах из того же файла"
-# Разделяет "сеть недоступна" от "список слишком длинный". Берутся именно
-# рабочие строки Server, а не первые строки файла: там комментарии.
+# Разделяет "сеть недоступна" от "список слишком длинный". Берутся рабочие
+# строки Server, а не первые строки файла: там комментарии.
 grep '^Server' "$T/etc/pacman.d/mirrorlist" | head -3 > "$T/etc/pacman.d/mirrorlist.three"
 note "короткий список, $(grep -c '^Server' "$T/etc/pacman.d/mirrorlist.three") серверов:"
 sed 's/^/    /' "$T/etc/pacman.d/mirrorlist.three"
@@ -143,17 +142,20 @@ printf '[core]\nInclude = /etc/pacman.d/mirrorlist.three\n' > "$T/etc/pacman.con
 run_pacman "3 зеркала" /etc/pacman.conf.three 60
 
 say "8. РАЗДЕЛЕНИЕ ПО РЕПОЗИТОРИЯМ: какой именно падает"
-mkdir -p /tmp/nyx-dbshared
+# Каталог базы создаётся ВНУТРИ chroot, иначе pacman его не увидит. Это и было
+# причиной предыдущего пустого результата.
 for repo in core extra cachyos nyx; do
     printf '  %-9s ' "$repo"
     chroot "$T" /bin/bash -c "
+        rm -rf /tmp/dbx
+        mkdir -p /tmp/dbx
         printf '[%s]\n' '$repo' > /tmp/only.conf
         case '$repo' in
             core|extra) printf 'Include = /etc/pacman.d/mirrorlist.three\n' >> /tmp/only.conf ;;
             cachyos)    printf 'SigLevel = Optional TrustAll\nServer = https://mirror.cachyos.org/repo/\$arch/cachyos\n' >> /tmp/only.conf ;;
             nyx)        printf 'SigLevel = Optional TrustAll\nServer = file:///var/cache/nyx-repo\n' >> /tmp/only.conf ;;
         esac
-        out=\$(timeout 60 pacman --config /tmp/only.conf --dbpath /tmp/dbshared --logfile /dev/null -Sy 2>&1)
+        out=\$(timeout 60 pacman --config /tmp/only.conf --dbpath /tmp/dbx --logfile /dev/null -Sy 2>&1)
         rc=\$?
         if [ \"\$rc\" -eq 0 ]; then
             echo OK
@@ -161,14 +163,12 @@ for repo in core extra cachyos nyx; do
             echo 'ZAVIS (таймаут 60s)'
         else
             echo \"KOD \$rc\"
-            echo \"\$out\" | tail -3 | sed 's/^/              /'
+            echo \"\$out\" | tail -4 | sed 's/^/              /'
         fi
     " 2>/dev/null
-    rm -rf /tmp/nyx-dbshared
-    mkdir -p /tmp/nyx-dbshared
 done
 
 say "9. ИТОГ"
-echo "  Нужен весь вывод, особенно разделы 6, 7 и 8."
-echo "  Если в разделе 6 стоит ZAVIS, а в разделе 7 все OK, то причина в длине"
-echo "  списка зеркал целевой системы, и лечится он коротким списком."
+echo "  Нужен весь вывод, особенно разделы 5, 6, 7 и 8."
+echo "  Раздел 5 покажет, была ли база пустой: если нет, тесты выше"
+echo "  проверяли сверку с уже скачанным, а не настоящую загрузку."
