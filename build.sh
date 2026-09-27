@@ -66,6 +66,33 @@ grep -q '^ID=arch$' /etc/os-release || die "This script must run inside Arch Lin
 BUILD_ROOT="$(realpath -m "$BUILD_ROOT")"
 [[ "$BUILD_ROOT" != "/" && "$BUILD_ROOT" != "/var/tmp" && "$BUILD_ROOT" != "$SOURCE_DIR" ]] || die "Unsafe BUILD_ROOT: $BUILD_ROOT"
 
+# One build at a time per BUILD_ROOT. Two of them in the same directory do not
+# merely interleave their output: makepkg --cleanbuild deletes $srcdir and
+# re-extracts the sources, so a concurrent build loses its source tree and its
+# object files underneath itself. The symptom is not obvious and looks like a
+# compiler fault:
+#
+#   [174/452] Building CXX object .../Config.cpp.o
+#   FAILED: [code=1] ... fatal error: opening dependency file ...: No such file
+#   ==> Removing existing $srcdir/ directory...
+#
+# The lock is taken before the build directory is touched, because rm -rf of a
+# shared directory is what turns a second run into a corrupting one.
+LOCK_FILE="$BUILD_ROOT.lock"
+# Режим добавления, а не >: вторая сборка открывает тот же файл на запись и
+# обнуляла его, прежде чем успевала прочитать, кто держит замок. Сообщение
+# выходило "Started by: unknown" ровно тогда, когда оно было нужнее всего.
+exec 9>>"$LOCK_FILE"
+if ! flock -n 9; then
+    holder=$(tail -1 "$LOCK_FILE" 2>/dev/null || true)
+    die "Another build already holds $BUILD_ROOT.
+  Started by: ${holder:-unknown}
+  If no build is actually running, remove $LOCK_FILE and try again.
+  Do not remove it while a build is in progress: two builds in one directory
+  destroy each other's sources, and the failure looks like a compiler error."
+fi
+printf 'pid %s, started %s\n' "$$" "$(date '+%F %T')" >&9
+
 log "Preparing build directory"
 df -h "$SOURCE_DIR" | sed -n '1,2p'
 rm -rf -- "$BUILD_ROOT"

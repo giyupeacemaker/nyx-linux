@@ -232,6 +232,24 @@ fi
 # read the code to modify it. The vendored tarballs are redistributed here, so
 # their licences have to be readable in the repository and not only inside the
 # archives.
+# Two builds in one BUILD_ROOT destroy each other, and the resulting error
+# points at the compiler rather than at the cause. The lock has to be taken
+# before the build directory is touched.
+if grep -q 'flock -n 9' build.sh; then
+    ok "build.sh takes an exclusive lock on BUILD_ROOT"
+else
+    bad "build.sh has no lock: two concurrent builds will corrupt each other"
+fi
+lock_line=$(grep -n 'flock -n 9' build.sh | head -1 | cut -d: -f1)
+rm_line=$(grep -nE '^rm -rf -- "\$BUILD_ROOT"$' build.sh | head -1 | cut -d: -f1)
+if [[ -n "$lock_line" && -n "$rm_line" ]] && (( lock_line < rm_line )); then
+    ok "the lock is taken before BUILD_ROOT is removed (lines $lock_line < $rm_line)"
+else
+    bad "the lock must be taken before rm -rf of BUILD_ROOT"
+    echo "       lock at line ${lock_line:-none}, rm at line ${rm_line:-none}"
+fi
+
+# --------------------------------------------------------------------------
 sect "Licensing and attribution"
 [[ -f LICENSE ]] && ok "LICENSE exists" || bad "no LICENSE: the repository is not open source"
 if [[ -f LICENSE ]]; then
@@ -1515,7 +1533,7 @@ if [[ -f "$SETTINGS" ]]; then
         fi
     fi
 
-    # The keyring has to be populated before packages, or pacman -Sy is refused.
+    # A keyring has to be populated before packages, or pacman -Sy is refused.
     # pacstrap installs archlinux-keyring but never runs pacman-key --populate in
     # the target, so it starts with 183 keys and none of them trusted, while
     # core and extra ask for SigLevel = Required. This was the only bug that ever
