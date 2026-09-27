@@ -7,11 +7,22 @@ desktop, and it installs a working system to your disk.
 ![UEFI only](https://img.shields.io/badge/boot-UEFI%20%2F%20GPT-blue)
 ![Secure Boot](https://img.shields.io/badge/Secure%20Boot-not%20supported-orange)
 
-## Project Info 
-The Nyx Linux is in pre-alpha stage now. bugs or arch linux naming may occur.
-aaaand,Planning to switch from systemd to OpenRC! 
-but after switching to Stable/Released stage,and releasing 1-3 Stable releases with systemd.
-Nyx Linux firstly is ENTHUSIAST Project,that maintaining by 1 person,and AI agent(helped for doing repo)
+## Project info
+
+Nyx Linux is in pre-alpha. Expect bugs, and expect some Arch Linux naming to
+read oddly for a while.
+
+There are plans to switch from systemd to OpenRC eventually, but not before
+reaching a stable release: one to three stable releases ship with systemd
+first, and only then does the init system change.
+
+This is, first and foremost, an enthusiast project, maintained by one person
+and an AI agent that helps with the repository.
+
+## Biggest Plans
+
+- `linux-nyx` — as soon as possible: a stable and performant kernel for the
+  whole Nyx ecosystem
 
 ## What it is
 
@@ -29,12 +40,12 @@ Nyx Linux firstly is ENTHUSIAST Project,that maintaining by 1 person,and AI agen
 | | |
 | --- | --- |
 | Boot mode | UEFI only, GPT partitioned |
-| Secure Boot | need to be disabled |
+| Secure Boot | must be disabled |
 | Architecture | x86_64 |
 | Free disk | 20 GB minimum |
 | RAM | 4 GB minimum |
 
-Legacy BIOS is not supported,and will NEVER be.
+Legacy BIOS is not supported, and will never be.
 
 ## Getting the ISO
 
@@ -122,8 +133,6 @@ system update brings a new version along:
 - `nyx-tweaks` — eleven opinionated switches, and a menu to set them
 - `nyx-motd` — the login greeting
 - `nyx-apply-wallpaper` — applies the default background on first login
-## Biggest Plans
-- `linux-nyx` — (SOON as possible) best stable and perf kernel,that will be used with nyx ecosystem
 
 ### `nyx-update`
 
